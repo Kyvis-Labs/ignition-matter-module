@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.matter.ignition</groupId>
+    <artifactId>matter-ignition-module</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <modules>
+        <module>matter-tag-provider-gateway</module>
+        <module>matter-tag-provider-build</module>
+    </modules>
+
+    <properties>
+        <ignition-platform-version>8.3.4</ignition-platform-version>
+        <ignition-sdk-version>${ignition-platform-version}</ignition-sdk-version>
+        <matter-client-version>0.1.0</matter-client-version>
+        <maven.build.timestamp.format>yyyyMMddHH</maven.build.timestamp.format>
+        <module-base-version>0.1.0</module-base-version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    </properties>
+
+    <pluginRepositories>
+        <pluginRepository>
+            <id>releases</id>
+            <url>https://nexus.inductiveautomation.com/repository/inductiveautomation-releases</url>
+            <releases>
+                <enabled>true</enabled>
+                <updatePolicy>always</updatePolicy>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </pluginRepository>
+    </pluginRepositories>
+
+    <repositories>
+        <repository>
+            <id>ia-releases</id>
+            <url>https://nexus.inductiveautomation.com/repository/inductiveautomation-releases</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+            <releases>
+                <enabled>true</enabled>
+                <updatePolicy>always</updatePolicy>
+            </releases>
+        </repository>
+        <repository>
+            <id>ia-snapshots</id>
+            <url>https://nexus.inductiveautomation.com/repository/inductiveautomation-snapshots</url>
+            <snapshots>
+                <enabled>true</enabled>
+                <updatePolicy>always</updatePolicy>
+            </snapshots>
+            <releases>
+                <enabled>false</enabled>
+            </releases>
+        </repository>
+        <repository>
+            <id>ia-thirdparty</id>
+            <url>https://nexus.inductiveautomation.com/repository/inductiveautomation-thirdparty</url>
+            <releases>
+                <enabled>true</enabled>
+                <updatePolicy>always</updatePolicy>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+</project>

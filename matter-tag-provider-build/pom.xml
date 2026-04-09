@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.matter.ignition</groupId>
+        <artifactId>matter-ignition-module</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>matter-tag-provider-build</artifactId>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.matter.ignition</groupId>
+            <artifactId>matter-tag-provider-gateway</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>com.inductiveautomation.ignitionsdk</groupId>
+                <artifactId>ignition-maven-plugin</artifactId>
+                <version>1.1.0</version>
+
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>modl</goal>
+                        </goals>
+                    </execution>
+                </executions>
+
+                <configuration>
+                    <projectScopes>
+                        <projectScope>
+                            <name>matter-tag-provider-gateway</name>
+                            <scope>G</scope>
+                        </projectScope>
+                    </projectScopes>
+
+                    <moduleId>com.matter.ignition.matter-tag-provider</moduleId>
+                    <moduleName>Matter Tag Provider</moduleName>
+                    <moduleDescription>Exposes Matter smart home device data as Ignition tags via a managed tag provider.</moduleDescription>
+                    <moduleVersion>${module-base-version}.${maven.build.timestamp}</moduleVersion>
+                    <requiredIgnitionVersion>${ignition-platform-version}</requiredIgnitionVersion>
+                    <requiredFrameworkVersion>8</requiredFrameworkVersion>
+                    <freeModule>true</freeModule>
+                    <licenseFile>license.html</licenseFile>
+                    <documentationFile>doc/index.html</documentationFile>
+
+                    <hooks>
+                        <hook>
+                            <scope>G</scope>
+                            <hookClass>com.matter.ignition.gateway.MatterTagProviderGatewayHook</hookClass>
+                        </hook>
+                    </hooks>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
