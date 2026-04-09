@@ -30,9 +30,9 @@
         </dependency>
 
         <dependency>
-            <groupId>com.matter</groupId>
-            <artifactId>matter-client</artifactId>
-            <version>${matter-client-version}</version>
+            <groupId>com.kyvislabs.matter</groupId>
+            <artifactId>java-matter-client</artifactId>
+            <version>${java-matter-client-version}</version>
         </dependency>
     </dependencies>
 

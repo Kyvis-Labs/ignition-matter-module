@@ -44,7 +44,7 @@
                         </projectScope>
                     </projectScopes>
 
-                    <moduleId>com.matter.ignition.matter-tag-provider</moduleId>
+                    <moduleId>com.kyvislabs.matter.ignition.matter-tag-provider</moduleId>
                     <moduleName>Matter Tag Provider</moduleName>
                     <moduleDescription>Exposes Matter smart home device data as Ignition tags via a managed tag provider.</moduleDescription>
                     <moduleVersion>${module-base-version}.${maven.build.timestamp}</moduleVersion>

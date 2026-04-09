@@ -17,7 +17,7 @@
     <properties>
         <ignition-platform-version>8.3.4</ignition-platform-version>
         <ignition-sdk-version>${ignition-platform-version}</ignition-sdk-version>
-        <matter-client-version>0.1.0</matter-client-version>
+        <java-matter-client-version>0.1.0</java-matter-client-version>
         <maven.build.timestamp.format>yyyyMMddHH</maven.build.timestamp.format>
         <module-base-version>0.1.0</module-base-version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

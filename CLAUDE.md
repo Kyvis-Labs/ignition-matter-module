@@ -22,7 +22,7 @@ The build uses the `ignition-maven-plugin` to package a `.modl` file — the dep
 
 This is a Maven multi-module project with two submodules:
 
-- **matter-tag-provider-gateway** — All runtime code. Contains the gateway-scoped module hook and tag provider implementation. Java 17, depends on Ignition SDK (`ignition-common`, `gateway-api`) and `matter-client` (external library for WebSocket communication with python-matter-server).
+- **matter-tag-provider-gateway** — All runtime code. Contains the gateway-scoped module hook and tag provider implementation. Java 17, depends on Ignition SDK (`ignition-common`, `gateway-api`) and `java-matter-client` (`com.kyvislabs.matter`, external library for WebSocket communication with python-matter-server).
 - **matter-tag-provider-build** — Packaging only. Uses `ignition-maven-plugin` to assemble the `.modl` file from the gateway module. No source code.
 
 ### Key Classes (all in `com.matter.ignition.gateway`)

@@ -11,6 +11,8 @@ import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.time.Instant;
+import java.util.concurrent.atomic.AtomicLong;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -44,14 +46,17 @@ import com.inductiveautomation.ignition.common.tags.query.TagQueryFilter;
 import com.inductiveautomation.ignition.common.tags.status.TagDiagnostics;
 import com.inductiveautomation.ignition.gateway.historian.TagHistoryQueryInterface;
 import com.inductiveautomation.ignition.gateway.model.GatewayContext;
+import com.inductiveautomation.ignition.gateway.model.ProfileStatus;
 import com.inductiveautomation.ignition.gateway.tags.model.GatewayTagProvider;
 import com.inductiveautomation.ignition.gateway.tags.model.TagStructureListener;
 import com.inductiveautomation.ignition.gateway.tags.model.TagSubscription;
+import com.inductiveautomation.ignition.gateway.tags.model.TagSubscriptionChangeEvent;
+import com.inductiveautomation.ignition.gateway.tags.model.TagSubscriptionChangeListener;
 import com.inductiveautomation.ignition.gateway.tags.model.TagSubscriptionModel;
-import com.matter.client.MatterClient;
-import com.matter.client.model.EventType;
-import com.matter.client.model.MatterNodeData;
-import com.matter.client.model.ServerInfoMessage;
+import com.kyvislabs.matter.client.MatterClient;
+import com.kyvislabs.matter.client.model.EventType;
+import com.kyvislabs.matter.client.model.MatterNodeData;
+import com.kyvislabs.matter.client.model.ServerInfoMessage;
 import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
 
@@ -76,9 +81,14 @@ class MatterTagProvider implements GatewayTagProvider {
     // endpoint ID -> readable name per node (e.g., "2" -> "TemperatureSensor")
     private final ConcurrentHashMap<Integer, ConcurrentHashMap<String, String>> endpointNameCache = new ConcurrentHashMap<>();
 
+    private final TagSubscriptionChangeListener subscriptionChangeListener = this::onSubscriptionChanged;
     private TagSubscriptionModel subscriptionModel;
-    private MatterClient matterClient;
+    private volatile MatterClient matterClient;
     private volatile boolean running = false;
+
+    private final AtomicLong eventsReceived = new AtomicLong(0);
+    private final AtomicLong attributeWritesSent = new AtomicLong(0);
+    private final AtomicLong connectionAttempts = new AtomicLong(0);
 
     private static class TagNode {
         final DataType dataType;
@@ -109,6 +119,7 @@ class MatterTagProvider implements GatewayTagProvider {
     @Override
     public void setup(TagSubscriptionModel model, boolean b) {
         this.subscriptionModel = model;
+        model.addListener(name, subscriptionChangeListener);
     }
 
     @Override
@@ -119,6 +130,15 @@ class MatterTagProvider implements GatewayTagProvider {
         putTag("Server/FabricId", DataType.Int8, 0);
         putTag("Server/SDKVersion", DataType.String, "");
         putTag("Server/SchemaVersion", DataType.Int4, 0);
+        putTag("Server/URL", DataType.String, serverUrl);
+        putTag("Server/LastConnectedTime", DataType.String, "");
+        putTag("Server/LastDisconnectedTime", DataType.String, "");
+        putTag("Server/ConnectionAttempts", DataType.Int8, 0L);
+        putTag("Server/EventsReceived", DataType.Int8, 0L);
+        putTag("Server/AttributeWritesSent", DataType.Int8, 0L);
+        putTag("Server/LastEventTime", DataType.String, "");
+        putTag("Server/NodeCount", DataType.Int4, 0);
+        putTag("Server/LastError", DataType.String, "");
 
         context.getExecutionManager().register(
                 MODULE_ID, "MatterMaintain-" + name, this::maintainConnection, 10_000);
@@ -129,6 +149,10 @@ class MatterTagProvider implements GatewayTagProvider {
     @Override
     public void shutdown() {
         running = false;
+
+        if (subscriptionModel != null) {
+            subscriptionModel.removeListener(name, subscriptionChangeListener);
+        }
 
         try {
             context.getExecutionManager().unRegister(MODULE_ID, "MatterMaintain-" + name);
@@ -225,10 +249,8 @@ class MatterTagProvider implements GatewayTagProvider {
 
     @Override
     public CompletableFuture<TagProviderInformation> getStatusInformation() {
-        boolean connected = matterClient != null && matterClient.isConnected();
-        TagProviderInformation info = new TagProviderInformation(
-                name, connected ? "Connected" : "Disconnected", false);
-        info.setAvailable(connected);
+        String status = ProfileStatus.RUNNING.getMessage().toString();
+        TagProviderInformation info = new TagProviderInformation(name, status, true);
         return CompletableFuture.completedFuture(info);
     }
 
@@ -386,6 +408,8 @@ class MatterTagProvider implements GatewayTagProvider {
             matterClient = null;
         }
 
+        connectionAttempts.incrementAndGet();
+        updateTagValue("Server/ConnectionAttempts", connectionAttempts.get());
         logger.info("Connecting to Matter server at " + serverUrl);
 
         try {
@@ -399,6 +423,8 @@ class MatterTagProvider implements GatewayTagProvider {
             updateTagValue("Server/FabricId", serverInfo.getFabricId());
             updateTagValue("Server/SDKVersion", serverInfo.getSdkVersion());
             updateTagValue("Server/SchemaVersion", serverInfo.getSchemaVersion());
+            updateTagValue("Server/LastConnectedTime", Instant.now().toString());
+            updateTagValue("Server/LastError", "");
 
             matterClient.addEventListener(this::onMatterEvent);
 
@@ -411,6 +437,7 @@ class MatterTagProvider implements GatewayTagProvider {
         } catch (Exception e) {
             logger.warn("Failed to connect to '" + name + "' at " + serverUrl + ": " + e.getMessage());
             updateTagValue("Server/Connected", false);
+            updateTagValue("Server/LastError", e.getMessage() != null ? e.getMessage() : e.toString());
             if (matterClient != null) {
                 try {
                     matterClient.close();
@@ -432,6 +459,7 @@ class MatterTagProvider implements GatewayTagProvider {
             matterClient = null;
         }
         updateTagValue("Server/Connected", false);
+        updateTagValue("Server/LastDisconnectedTime", Instant.now().toString());
     }
 
     private void maintainConnection() {
@@ -445,6 +473,9 @@ class MatterTagProvider implements GatewayTagProvider {
 
     private void onMatterEvent(EventType eventType, JsonElement data) {
         try {
+            eventsReceived.incrementAndGet();
+            updateTagValue("Server/EventsReceived", eventsReceived.get());
+            updateTagValue("Server/LastEventTime", Instant.now().toString());
             switch (eventType) {
                 case NODE_ADDED, NODE_UPDATED -> {
                     MatterNodeData node = gson.fromJson(data, MatterNodeData.class);
@@ -469,6 +500,7 @@ class MatterTagProvider implements GatewayTagProvider {
                 case SERVER_SHUTDOWN -> {
                     logger.info("Matter server '" + name + "' is shutting down.");
                     updateTagValue("Server/Connected", false);
+                    updateTagValue("Server/LastDisconnectedTime", Instant.now().toString());
                 }
                 case SERVER_INFO_UPDATED -> {
                     if (matterClient != null) {
@@ -566,6 +598,8 @@ class MatterTagProvider implements GatewayTagProvider {
             Object tagValue = convertValue(entry.getValue());
             putTag(tagPath, dataType, tagValue);
         }
+
+        updateTagValue("Server/NodeCount", childIndex.getOrDefault("Nodes", Set.of()).size());
     }
 
     private void removeNodeTags(int nodeId) {
@@ -582,6 +616,8 @@ class MatterTagProvider implements GatewayTagProvider {
         numericToReadable.remove(nodeId);
         readableToNumeric.remove(nodeId);
         endpointNameCache.remove(nodeId);
+
+        updateTagValue("Server/NodeCount", childIndex.getOrDefault("Nodes", Set.of()).size());
     }
 
     private void configureAndUpdateAttributeTag(int nodeId, String numericPath, Object value) {
@@ -650,6 +686,8 @@ class MatterTagProvider implements GatewayTagProvider {
 
         if (matterClient != null && matterClient.isConnected()) {
             matterClient.writeAttribute(nodeId, numericPath, value);
+            attributeWritesSent.incrementAndGet();
+            updateTagValue("Server/AttributeWritesSent", attributeWritesSent.get());
         } else {
             throw new IllegalStateException("Not connected to Matter server");
         }
@@ -696,6 +734,20 @@ class MatterTagProvider implements GatewayTagProvider {
             QualifiedValue qv = new BasicQualifiedValue(value, QualityCode.Good);
             node.currentValue = qv;
             notifySubscribers(path, qv);
+        }
+    }
+
+    private void onSubscriptionChanged(TagSubscriptionChangeEvent event) {
+        for (TagSubscription sub : event.getAddedSubscriptions()) {
+            String path = tagPathToString(sub.getPath());
+            TagNode node = tags.get(path);
+            if (node != null) {
+                try {
+                    sub.getListener().tagChanged(new TagChangeEvent(sub.getPath(), node.currentValue));
+                } catch (Exception e) {
+                    logger.debug("Error pushing initial value for " + path, e);
+                }
+            }
         }
     }
 
