@@ -2,6 +2,7 @@ package com.matter.ignition.gateway;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Static lookup tables for human-readable Matter device type, cluster, and attribute names.
@@ -212,6 +213,67 @@ class MatterNames {
             Map.entry("3/1", "IdentifyType")
     );
 
+    // Clusters that produce user-facing tags (everything else is filtered out)
+    private static final Set<Integer> ALLOWED_CLUSTERS = Set.of(
+            6,    // OnOff
+            8,    // LevelControl
+            59,   // Switch
+            69,   // BooleanState
+            80,   // ModeSelect
+            257,  // DoorLock
+            258,  // WindowCovering
+            512,  // PumpConfigurationAndControl
+            513,  // Thermostat
+            768,  // ColorControl
+            1024, // IlluminanceMeasurement
+            1026, // TemperatureMeasurement
+            1027, // PressureMeasurement
+            1028, // FlowMeasurement
+            1029, // RelativeHumidityMeasurement
+            1030  // OccupancySensing
+    );
+
+    // Global attribute IDs always skipped from filtered view
+    private static final Set<Integer> GLOBAL_ATTR_IDS = Set.of(
+            65528, 65529, 65530, 65531, 65532, 65533
+    );
+
+    // Endpoints with these device type IDs are infrastructure (skipped from filtered view)
+    private static final Set<Integer> INFRASTRUCTURE_DEVICE_TYPES = Set.of(
+            22, // RootNode
+            14  // AggregatorEndpoint
+    );
+
+    // Attributes promoted to device root: "clusterId/attrId" -> tag name
+    private static final Map<String, String> PROMOTED_ATTRIBUTES = Map.of(
+            "40/17", "Reachable",
+            "57/17", "Reachable"
+    );
+
+    // PowerSource (47) attributes placed under Battery/ folder
+    private static final Map<Integer, String> BATTERY_ATTRIBUTES = Map.of(
+            0, "Status",
+            2, "Description",
+            11, "Voltage",
+            12, "PercentRemaining",
+            14, "ChargeLevel",
+            15, "ReplacementNeeded",
+            16, "Replaceability",
+            19, "ReplacementDescription"
+    );
+
+    // BasicInformation (40) / BridgedDeviceBasicInformation (57) attributes placed under DeviceInfo/
+    private static final Map<Integer, String> DEVICE_INFO_ATTRIBUTES = Map.of(
+            1, "VendorName",
+            3, "ProductName",
+            8, "HardwareVersionString",
+            10, "SoftwareVersionString",
+            11, "ManufacturingDate",
+            12, "PartNumber",
+            15, "SerialNumber",
+            18, "UniqueID"
+    );
+
     static String clusterName(int id) {
         return CLUSTER_NAMES.getOrDefault(id, "Cluster_" + id);
     }
@@ -237,6 +299,45 @@ class MatterNames {
             }
         }
         return null;
+    }
+
+    static Integer resolveEndpointDeviceTypeId(Object deviceTypeListValue) {
+        if (!(deviceTypeListValue instanceof List<?> list)) return null;
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> map) {
+                Object typeObj = map.get("0");
+                if (typeObj == null) typeObj = map.get(0);
+                if (typeObj instanceof Number num) {
+                    return num.intValue();
+                }
+            }
+        }
+        return null;
+    }
+
+    static boolean isAllowedCluster(int clusterId) {
+        return ALLOWED_CLUSTERS.contains(clusterId);
+    }
+
+    static boolean isGlobalAttribute(int attrId) {
+        return GLOBAL_ATTR_IDS.contains(attrId);
+    }
+
+    static boolean isInfrastructureDeviceType(int deviceTypeId) {
+        return INFRASTRUCTURE_DEVICE_TYPES.contains(deviceTypeId);
+    }
+
+    static String getPromotedName(int clusterId, int attrId) {
+        return PROMOTED_ATTRIBUTES.get(clusterId + "/" + attrId);
+    }
+
+    static String getBatteryAttributeName(int attrId) {
+        return BATTERY_ATTRIBUTES.get(attrId);
+    }
+
+    static String getDeviceInfoName(int clusterId, int attrId) {
+        if (clusterId != 40 && clusterId != 57) return null;
+        return DEVICE_INFO_ATTRIBUTES.get(attrId);
     }
 
 }

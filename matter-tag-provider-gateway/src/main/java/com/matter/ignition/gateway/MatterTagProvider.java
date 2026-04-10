@@ -80,6 +80,16 @@ class MatterTagProvider implements GatewayTagProvider {
     private final ConcurrentHashMap<Integer, ConcurrentHashMap<String, String>> readableToNumeric = new ConcurrentHashMap<>();
     // endpoint ID -> readable name per node (e.g., "2" -> "TemperatureSensor")
     private final ConcurrentHashMap<Integer, ConcurrentHashMap<String, String>> endpointNameCache = new ConcurrentHashMap<>();
+    // endpoint ID -> device type ID per node (for infrastructure filtering)
+    private final ConcurrentHashMap<Integer, ConcurrentHashMap<String, Integer>> endpointDeviceTypeIdCache = new ConcurrentHashMap<>();
+
+    private final ConcurrentHashMap<Integer, String> nodeFolderNames = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Integer> folderNameToNodeId = new ConcurrentHashMap<>();
+
+    // Raw data toggle state per node
+    private final ConcurrentHashMap<Integer, Boolean> rawDataEnabled = new ConcurrentHashMap<>();
+    // Cached attribute maps per node for building raw data on demand
+    private final ConcurrentHashMap<Integer, ConcurrentHashMap<String, Object>> nodeAttributeCache = new ConcurrentHashMap<>();
 
     private final TagSubscriptionChangeListener subscriptionChangeListener = this::onSubscriptionChanged;
     private TagSubscriptionModel subscriptionModel;
@@ -166,6 +176,11 @@ class MatterTagProvider implements GatewayTagProvider {
         numericToReadable.clear();
         readableToNumeric.clear();
         endpointNameCache.clear();
+        endpointDeviceTypeIdCache.clear();
+        nodeFolderNames.clear();
+        folderNameToNodeId.clear();
+        rawDataEnabled.clear();
+        nodeAttributeCache.clear();
     }
 
     @Override
@@ -523,26 +538,45 @@ class MatterTagProvider implements GatewayTagProvider {
 
     private void buildNodeTags(MatterNodeData node) {
         int nodeId = node.getNodeId();
-        String prefix = nodePrefix(nodeId);
+        Map<String, Object> attributes = node.getAttributes() != null ? node.getAttributes() : Map.of();
+
+        String newFolderName = computeNodeFolderName(nodeId, attributes);
+        String oldFolderName = nodeFolderNames.get(nodeId);
+
+        // Preserve raw data toggle state across rebuilds
+        boolean wasRawDataEnabled = rawDataEnabled.getOrDefault(nodeId, false);
 
         // Clear stale tags if node already existed (NODE_UPDATED)
-        if (tags.containsKey(prefix)) {
+        if (oldFolderName != null) {
             removeNodeTags(nodeId);
         }
 
+        nodeFolderNames.put(nodeId, newFolderName);
+        folderNameToNodeId.put(newFolderName, nodeId);
+
+        String prefix = nodePrefix(nodeId);
+
         putTag(prefix + "/Available", DataType.Boolean, node.isAvailable());
-        putTag(prefix + "/DateCommissioned", DataType.String,
-                node.getDateCommissioned() != null ? node.getDateCommissioned() : "");
-        putTag(prefix + "/LastInterview", DataType.String,
-                node.getLastInterview() != null ? node.getLastInterview() : "");
-        putTag(prefix + "/IsBridge", DataType.Boolean, node.isBridge());
+        putTag(prefix + "/ShowRawData", DataType.Boolean, wasRawDataEnabled);
+        rawDataEnabled.put(nodeId, wasRawDataEnabled);
 
-        Map<String, Object> attributes = node.getAttributes();
-        if (attributes == null) return;
+        // Cache attributes for raw data (ConcurrentHashMap doesn't allow null values)
+        ConcurrentHashMap<String, Object> cacheMap = new ConcurrentHashMap<>();
+        for (Map.Entry<String, Object> entry : attributes.entrySet()) {
+            if (entry.getKey() != null && entry.getValue() != null) {
+                cacheMap.put(entry.getKey(), entry.getValue());
+            }
+        }
+        nodeAttributeCache.put(nodeId, cacheMap);
 
-        // Pass 1: Resolve endpoint names from Descriptor cluster DeviceTypeList (attr 29/0)
+        if (attributes.isEmpty()) {
+            updateTagValue("Server/NodeCount", nodeFolderNames.size());
+            return;
+        }
+
+        // Pass 1: Resolve endpoint names and device type IDs from Descriptor cluster DeviceTypeList (attr 29/0)
         TreeMap<Integer, String> epNames = new TreeMap<>();
-        HashMap<String, Integer> nameCount = new HashMap<>();
+        TreeMap<Integer, Integer> epDeviceTypeIds = new TreeMap<>();
 
         for (Map.Entry<String, Object> entry : attributes.entrySet()) {
             String[] parts = entry.getKey().split("/");
@@ -554,6 +588,10 @@ class MatterTagProvider implements GatewayTagProvider {
                 String dtName = MatterNames.resolveEndpointDeviceType(entry.getValue());
                 if (dtName != null) {
                     epNames.put(ep, dtName);
+                }
+                Integer dtId = MatterNames.resolveEndpointDeviceTypeId(entry.getValue());
+                if (dtId != null) {
+                    epDeviceTypeIds.put(ep, dtId);
                 }
             }
         }
@@ -569,13 +607,20 @@ class MatterTagProvider implements GatewayTagProvider {
         }
         endpointNameCache.put(nodeId, epNameMap);
 
+        // Cache device type IDs per endpoint
+        ConcurrentHashMap<String, Integer> epDtIdMap = new ConcurrentHashMap<>();
+        for (Map.Entry<Integer, Integer> entry : epDeviceTypeIds.entrySet()) {
+            epDtIdMap.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        endpointDeviceTypeIdCache.put(nodeId, epDtIdMap);
+
         // Init bidirectional maps for this node
         ConcurrentHashMap<String, String> n2r = new ConcurrentHashMap<>();
         ConcurrentHashMap<String, String> r2n = new ConcurrentHashMap<>();
         numericToReadable.put(nodeId, n2r);
         readableToNumeric.put(nodeId, r2n);
 
-        // Pass 2: Build tags with readable paths
+        // Pass 2: Build tags with filtering
         for (Map.Entry<String, Object> entry : attributes.entrySet()) {
             String numericPath = entry.getKey();
             String[] parts = numericPath.split("/");
@@ -593,13 +638,56 @@ class MatterTagProvider implements GatewayTagProvider {
             n2r.put(numericPath, readablePath);
             r2n.put(readablePath, numericPath);
 
-            String tagPath = prefix + "/Attributes/" + readablePath;
             DataType dataType = inferDataType(entry.getValue());
             Object tagValue = convertValue(entry.getValue());
-            putTag(tagPath, dataType, tagValue);
+
+            // Determine placement prefix based on endpoint type
+            Integer deviceTypeId = epDtIdMap.get(epId);
+            boolean isInfra = deviceTypeId != null && MatterNames.isInfrastructureDeviceType(deviceTypeId);
+            String placementPrefix = isInfra ? prefix : prefix + "/Nodes/" + epName;
+
+            // 1. Promoted attribute (e.g., Reachable at device root)
+            String promotedName = MatterNames.getPromotedName(clusterId, attrId);
+            if (promotedName != null) {
+                putTag(placementPrefix + "/" + promotedName, dataType, tagValue);
+                continue;
+            }
+
+            // 2. Device info attribute (under DeviceInfo/ folder)
+            String infoName = MatterNames.getDeviceInfoName(clusterId, attrId);
+            if (infoName != null) {
+                putTag(placementPrefix + "/DeviceInfo/" + infoName, dataType, tagValue);
+                continue;
+            }
+
+            // 3. Battery attribute (under Battery/ folder)
+            if (clusterId == 47) {
+                String batteryName = MatterNames.getBatteryAttributeName(attrId);
+                if (batteryName != null) {
+                    putTag(placementPrefix + "/Battery/" + batteryName, dataType, tagValue);
+                    continue;
+                }
+            }
+
+            // 4. Skip global attributes
+            if (MatterNames.isGlobalAttribute(attrId)) continue;
+
+            // 5. Skip remaining infrastructure endpoint attributes
+            if (isInfra) continue;
+
+            // 6. Skip non-allowed clusters
+            if (!MatterNames.isAllowedCluster(clusterId)) continue;
+
+            // 7. Regular filtered tag
+            putTag(prefix + "/Nodes/" + readablePath, dataType, tagValue);
         }
 
-        updateTagValue("Server/NodeCount", childIndex.getOrDefault("Nodes", Set.of()).size());
+        // Rebuild raw data if it was previously enabled
+        if (wasRawDataEnabled) {
+            buildRawDataTags(nodeId);
+        }
+
+        updateTagValue("Server/NodeCount", nodeFolderNames.size());
     }
 
     private void removeNodeTags(int nodeId) {
@@ -608,34 +696,46 @@ class MatterTagProvider implements GatewayTagProvider {
         tags.keySet().removeIf(k -> k.equals(prefix) || k.startsWith(prefix + "/"));
         childIndex.keySet().removeIf(k -> k.equals(prefix) || k.startsWith(prefix + "/"));
 
-        Set<String> nodesChildren = childIndex.get("Nodes");
-        if (nodesChildren != null) {
-            nodesChildren.remove("Node " + nodeId);
+        String folderName = nodeFolderNames.remove(nodeId);
+        Set<String> rootChildren = childIndex.get("");
+        if (rootChildren != null) {
+            rootChildren.remove(folderName != null ? folderName : "Node " + nodeId);
+        }
+        if (folderName != null) {
+            folderNameToNodeId.remove(folderName);
         }
 
         numericToReadable.remove(nodeId);
         readableToNumeric.remove(nodeId);
         endpointNameCache.remove(nodeId);
+        endpointDeviceTypeIdCache.remove(nodeId);
+        rawDataEnabled.remove(nodeId);
+        nodeAttributeCache.remove(nodeId);
 
-        updateTagValue("Server/NodeCount", childIndex.getOrDefault("Nodes", Set.of()).size());
+        updateTagValue("Server/NodeCount", nodeFolderNames.size());
     }
 
     private void configureAndUpdateAttributeTag(int nodeId, String numericPath, Object value) {
+        if (isNodeLabelAttribute(numericPath) && value instanceof String) {
+            String currentFolderName = nodeFolderNames.get(nodeId);
+            if (currentFolderName != null) {
+                String newFolderName = computeNodeFolderName(nodeId, Map.of(numericPath, value));
+                if (!currentFolderName.equals(newFolderName)) {
+                    renameNodeFolder(nodeId, currentFolderName, newFolderName);
+                }
+            }
+        }
+
         String prefix = nodePrefix(nodeId);
         DataType dataType = inferDataType(value);
         Object tagValue = convertValue(value);
 
-        // Try to find an existing readable mapping
-        ConcurrentHashMap<String, String> n2r = numericToReadable.get(nodeId);
-        if (n2r != null) {
-            String readablePath = n2r.get(numericPath);
-            if (readablePath != null) {
-                putTag(prefix + "/Attributes/" + readablePath, dataType, tagValue);
-                return;
-            }
+        // Update attribute cache for raw data
+        ConcurrentHashMap<String, Object> cache = nodeAttributeCache.get(nodeId);
+        if (cache != null && value != null) {
+            cache.put(numericPath, value);
         }
 
-        // New attribute — derive name from caches
         String[] parts = numericPath.split("/");
         if (parts.length != 3) return;
 
@@ -650,31 +750,96 @@ class MatterTagProvider implements GatewayTagProvider {
 
         String readablePath = epName + "/" + clusterName + "/" + attrName;
 
-        if (n2r == null) {
-            n2r = numericToReadable.computeIfAbsent(nodeId, k -> new ConcurrentHashMap<>());
-        }
+        // Update bidirectional maps
+        ConcurrentHashMap<String, String> n2r = numericToReadable.computeIfAbsent(nodeId, k -> new ConcurrentHashMap<>());
         n2r.put(numericPath, readablePath);
         readableToNumeric.computeIfAbsent(nodeId, k -> new ConcurrentHashMap<>()).put(readablePath, numericPath);
 
-        putTag(prefix + "/Attributes/" + readablePath, dataType, tagValue);
+        // Update raw data tag if enabled
+        if (rawDataEnabled.getOrDefault(nodeId, false)) {
+            putTag(prefix + "/Raw Data/" + readablePath, dataType, tagValue);
+        }
+
+        // Determine placement prefix based on endpoint type
+        boolean isInfra = false;
+        ConcurrentHashMap<String, Integer> epDeviceTypes = endpointDeviceTypeIdCache.get(nodeId);
+        if (epDeviceTypes != null) {
+            Integer deviceTypeId = epDeviceTypes.get(epId);
+            if (deviceTypeId != null && MatterNames.isInfrastructureDeviceType(deviceTypeId)) {
+                isInfra = true;
+            }
+        }
+        String placementPrefix = isInfra ? prefix : prefix + "/Nodes/" + epName;
+
+        // Apply filtering
+
+        // 1. Promoted attribute
+        String promotedName = MatterNames.getPromotedName(clusterId, attrId);
+        if (promotedName != null) {
+            putTag(placementPrefix + "/" + promotedName, dataType, tagValue);
+            return;
+        }
+
+        // 2. Device info attribute
+        String infoName = MatterNames.getDeviceInfoName(clusterId, attrId);
+        if (infoName != null) {
+            putTag(placementPrefix + "/DeviceInfo/" + infoName, dataType, tagValue);
+            return;
+        }
+
+        // 3. Battery attribute
+        if (clusterId == 47) {
+            String batteryName = MatterNames.getBatteryAttributeName(attrId);
+            if (batteryName != null) {
+                putTag(placementPrefix + "/Battery/" + batteryName, dataType, tagValue);
+                return;
+            }
+        }
+
+        // 4. Skip global attributes
+        if (MatterNames.isGlobalAttribute(attrId)) return;
+
+        // 5. Skip remaining infrastructure endpoint attributes
+        if (isInfra) return;
+
+        // 6. Skip non-allowed clusters
+        if (!MatterNames.isAllowedCluster(clusterId)) return;
+
+        // 7. Regular filtered tag
+        putTag(prefix + "/Nodes/" + readablePath, dataType, tagValue);
     }
 
     // ---- Write handling ----
 
     private void handleAttributeWrite(String tagPath, Object value) throws Exception {
-        // tagPath: Nodes/Node {id}/Attributes/{epName}/{clusterName}/{attrName}
         String[] parts = tagPath.split("/");
-        if (parts.length < 6) {
-            throw new IllegalArgumentException("Invalid attribute tag path: " + tagPath);
+        if (parts.length < 2) {
+            throw new IllegalArgumentException("Invalid tag path: " + tagPath);
         }
 
-        String nodeIdStr = parts[1];
-        if (!nodeIdStr.startsWith("Node ")) {
-            throw new IllegalArgumentException("Cannot parse node ID from: " + nodeIdStr);
+        String folderName = parts[0];
+        Integer nodeIdObj = folderNameToNodeId.get(folderName);
+        if (nodeIdObj == null) {
+            throw new IllegalArgumentException("Cannot resolve node ID from folder: " + folderName);
         }
-        int nodeId = Integer.parseInt(nodeIdStr.substring(5));
+        int nodeId = nodeIdObj;
 
-        String readablePath = parts[3] + "/" + parts[4] + "/" + parts[5];
+        // ShowRawData toggle
+        if (parts.length == 2 && "ShowRawData".equals(parts[1])) {
+            handleShowRawDataWrite(nodeId, value);
+            return;
+        }
+
+        // Determine the readable path for the attribute
+        String readablePath;
+        if (parts.length == 5 && ("Nodes".equals(parts[1]) || "Raw Data".equals(parts[1]))) {
+            // Nodes path: {folderName}/Nodes/{epName}/{clusterName}/{attrName}
+            // Raw data path: {folderName}/Raw Data/{epName}/{clusterName}/{attrName}
+            readablePath = parts[2] + "/" + parts[3] + "/" + parts[4];
+        } else {
+            throw new IllegalArgumentException("Tag is read-only or invalid: " + tagPath);
+        }
+
         ConcurrentHashMap<String, String> r2n = readableToNumeric.get(nodeId);
         if (r2n == null) {
             throw new IllegalStateException("No attribute mappings for node " + nodeId);
@@ -690,6 +855,54 @@ class MatterTagProvider implements GatewayTagProvider {
             updateTagValue("Server/AttributeWritesSent", attributeWritesSent.get());
         } else {
             throw new IllegalStateException("Not connected to Matter server");
+        }
+    }
+
+    // ---- Raw data toggle ----
+
+    private void handleShowRawDataWrite(int nodeId, Object value) {
+        boolean enabled = Boolean.TRUE.equals(value) || "true".equalsIgnoreCase(String.valueOf(value));
+        rawDataEnabled.put(nodeId, enabled);
+
+        String prefix = nodePrefix(nodeId);
+        updateTagValue(prefix + "/ShowRawData", enabled);
+
+        if (enabled) {
+            buildRawDataTags(nodeId);
+        } else {
+            removeRawDataTags(nodeId);
+        }
+    }
+
+    private void buildRawDataTags(int nodeId) {
+        ConcurrentHashMap<String, Object> attributes = nodeAttributeCache.get(nodeId);
+        if (attributes == null) return;
+
+        String prefix = nodePrefix(nodeId);
+        ConcurrentHashMap<String, String> n2r = numericToReadable.get(nodeId);
+        if (n2r == null) return;
+
+        for (Map.Entry<String, Object> entry : attributes.entrySet()) {
+            String numericPath = entry.getKey();
+            String readablePath = n2r.get(numericPath);
+            if (readablePath == null) continue;
+
+            DataType dataType = inferDataType(entry.getValue());
+            Object tagValue = convertValue(entry.getValue());
+            putTag(prefix + "/Raw Data/" + readablePath, dataType, tagValue);
+        }
+    }
+
+    private void removeRawDataTags(int nodeId) {
+        String prefix = nodePrefix(nodeId);
+        String rawPrefix = prefix + "/Raw Data";
+
+        tags.keySet().removeIf(k -> k.equals(rawPrefix) || k.startsWith(rawPrefix + "/"));
+        childIndex.keySet().removeIf(k -> k.equals(rawPrefix) || k.startsWith(rawPrefix + "/"));
+
+        Set<String> nodeChildren = childIndex.get(prefix);
+        if (nodeChildren != null) {
+            nodeChildren.remove("Raw Data");
         }
     }
 
@@ -780,8 +993,72 @@ class MatterTagProvider implements GatewayTagProvider {
 
     // ---- Utilities ----
 
-    private static String nodePrefix(int nodeId) {
-        return "Nodes/Node " + nodeId;
+    private String nodePrefix(int nodeId) {
+        return nodeFolderNames.getOrDefault(nodeId, "Node " + nodeId);
+    }
+
+    private static String extractNodeLabel(Map<String, Object> attributes) {
+        for (String key : new String[]{"0/40/5", "0/57/5"}) {
+            Object val = attributes.get(key);
+            if (val instanceof String s && !s.isBlank()) {
+                return s;
+            }
+        }
+        return null;
+    }
+
+    private String computeNodeFolderName(int nodeId, Map<String, Object> attributes) {
+        String label = extractNodeLabel(attributes);
+        if (label == null) {
+            return "Node " + nodeId;
+        }
+        String sanitized = label.replace("/", "_").strip();
+        if (sanitized.isEmpty()) {
+            return "Node " + nodeId;
+        }
+        Integer existing = folderNameToNodeId.get(sanitized);
+        if (existing != null && existing != nodeId) {
+            sanitized = sanitized + " (Node " + nodeId + ")";
+        }
+        return sanitized;
+    }
+
+    private static boolean isNodeLabelAttribute(String numericPath) {
+        return "0/40/5".equals(numericPath) || "0/57/5".equals(numericPath);
+    }
+
+    private void renameNodeFolder(int nodeId, String oldName, String newName) {
+        String oldPrefix = oldName;
+        String newPrefix = newName;
+
+        List<String> oldPaths = new ArrayList<>();
+        for (String key : tags.keySet()) {
+            if (key.equals(oldPrefix) || key.startsWith(oldPrefix + "/")) {
+                oldPaths.add(key);
+            }
+        }
+
+        for (String oldPath : oldPaths) {
+            String newPath = newPrefix + oldPath.substring(oldPrefix.length());
+            TagNode node = tags.remove(oldPath);
+            if (node != null) {
+                tags.put(newPath, node);
+            }
+            Set<String> children = childIndex.remove(oldPath);
+            if (children != null) {
+                childIndex.put(newPath, children);
+            }
+        }
+
+        Set<String> rootChildren = childIndex.get("");
+        if (rootChildren != null) {
+            rootChildren.remove(oldName);
+            rootChildren.add(newName);
+        }
+
+        nodeFolderNames.put(nodeId, newName);
+        folderNameToNodeId.remove(oldName);
+        folderNameToNodeId.put(newName, nodeId);
     }
 
     private static DataType inferDataType(Object value) {
