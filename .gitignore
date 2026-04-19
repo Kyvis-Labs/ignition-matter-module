@@ -1,5 +1,6 @@
 # Maven build output
 target/
+*.class
 
 # IDE files
 .idea/
@@ -9,10 +10,15 @@ target/
 .settings/
 .vscode/
 *.swp
+*.swo
 
 # OS files
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log
+logs/
 
 # Ignition module build artifacts
 *.modl

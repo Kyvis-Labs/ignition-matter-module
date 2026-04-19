@@ -596,6 +596,25 @@ class MatterTagProvider implements GatewayTagProvider {
             }
         }
 
+        // Override endpoint names with user-assigned NodeLabel where available
+        for (Map.Entry<String, Object> entry : attributes.entrySet()) {
+            String[] nlParts = entry.getKey().split("/");
+            if (nlParts.length != 3) continue;
+            int nlEp, nlCluster, nlAttr;
+            try {
+                nlEp = Integer.parseInt(nlParts[0]);
+                nlCluster = Integer.parseInt(nlParts[1]);
+                nlAttr = Integer.parseInt(nlParts[2]);
+            } catch (NumberFormatException e) { continue; }
+            if ((nlCluster == 40 || nlCluster == 57) && nlAttr == 5
+                    && entry.getValue() instanceof String s && !s.isBlank()) {
+                String sanitized = s.replace("/", "_").strip();
+                if (!sanitized.isEmpty() && epNames.containsKey(nlEp)) {
+                    epNames.put(nlEp, sanitized);
+                }
+            }
+        }
+
         // Disambiguate duplicate device type names
         ConcurrentHashMap<String, String> epNameMap = new ConcurrentHashMap<>();
         HashMap<String, Integer> usedNames = new HashMap<>();
@@ -664,7 +683,8 @@ class MatterTagProvider implements GatewayTagProvider {
             if (clusterId == 47) {
                 String batteryName = MatterNames.getBatteryAttributeName(attrId);
                 if (batteryName != null) {
-                    putTag(placementPrefix + "/Battery/" + batteryName, dataType, tagValue);
+                    Object batteryValue = convertBatteryValue(attrId, tagValue);
+                    putTag(placementPrefix + "/Battery/" + batteryName, inferDataType(batteryValue), batteryValue);
                     continue;
                 }
             }
@@ -716,12 +736,36 @@ class MatterTagProvider implements GatewayTagProvider {
     }
 
     private void configureAndUpdateAttributeTag(int nodeId, String numericPath, Object value) {
+        // Update attribute cache first so label computations see the latest value
+        ConcurrentHashMap<String, Object> cache = nodeAttributeCache.get(nodeId);
+        if (cache != null && value != null) {
+            cache.put(numericPath, value);
+        }
+
         if (isNodeLabelAttribute(numericPath) && value instanceof String) {
+            // Check if top-level node folder needs renaming
             String currentFolderName = nodeFolderNames.get(nodeId);
             if (currentFolderName != null) {
-                String newFolderName = computeNodeFolderName(nodeId, Map.of(numericPath, value));
+                Map<String, Object> attrs = cache != null ? cache : Map.of(numericPath, value);
+                String newFolderName = computeNodeFolderName(nodeId, attrs);
                 if (!currentFolderName.equals(newFolderName)) {
                     renameNodeFolder(nodeId, currentFolderName, newFolderName);
+                }
+            }
+
+            // Check if endpoint sub-folder needs renaming
+            String[] pathParts = numericPath.split("/");
+            if (pathParts.length == 3) {
+                String epId = pathParts[0];
+                ConcurrentHashMap<String, String> epNameCache = endpointNameCache.get(nodeId);
+                if (epNameCache != null) {
+                    String oldEpName = epNameCache.get(epId);
+                    if (oldEpName != null) {
+                        String newLabel = ((String) value).replace("/", "_").strip();
+                        if (!newLabel.isEmpty() && !oldEpName.equals(newLabel)) {
+                            renameEndpointFolder(nodeId, epId, oldEpName, newLabel);
+                        }
+                    }
                 }
             }
         }
@@ -729,12 +773,6 @@ class MatterTagProvider implements GatewayTagProvider {
         String prefix = nodePrefix(nodeId);
         DataType dataType = inferDataType(value);
         Object tagValue = convertValue(value);
-
-        // Update attribute cache for raw data
-        ConcurrentHashMap<String, Object> cache = nodeAttributeCache.get(nodeId);
-        if (cache != null && value != null) {
-            cache.put(numericPath, value);
-        }
 
         String[] parts = numericPath.split("/");
         if (parts.length != 3) return;
@@ -791,7 +829,8 @@ class MatterTagProvider implements GatewayTagProvider {
         if (clusterId == 47) {
             String batteryName = MatterNames.getBatteryAttributeName(attrId);
             if (batteryName != null) {
-                putTag(placementPrefix + "/Battery/" + batteryName, dataType, tagValue);
+                Object batteryValue = convertBatteryValue(attrId, tagValue);
+                putTag(placementPrefix + "/Battery/" + batteryName, inferDataType(batteryValue), batteryValue);
                 return;
             }
         }
@@ -998,12 +1037,47 @@ class MatterTagProvider implements GatewayTagProvider {
     }
 
     private static String extractNodeLabel(Map<String, Object> attributes) {
+        // Check endpoint 0 first (backward compatibility)
         for (String key : new String[]{"0/40/5", "0/57/5"}) {
             Object val = attributes.get(key);
             if (val instanceof String s && !s.isBlank()) {
                 return s;
             }
         }
+
+        // For bridged devices, check non-zero endpoints
+        TreeMap<Integer, String> epLabels = new TreeMap<>();
+        TreeMap<Integer, Boolean> nonInfraEps = new TreeMap<>();
+
+        for (Map.Entry<String, Object> entry : attributes.entrySet()) {
+            String[] parts = entry.getKey().split("/");
+            if (parts.length != 3) continue;
+            int ep, cluster, attr;
+            try {
+                ep = Integer.parseInt(parts[0]);
+                cluster = Integer.parseInt(parts[1]);
+                attr = Integer.parseInt(parts[2]);
+            } catch (NumberFormatException e) { continue; }
+            if (ep == 0) continue;
+
+            if (cluster == 29 && attr == 0) {
+                Integer dtId = MatterNames.resolveEndpointDeviceTypeId(entry.getValue());
+                if (dtId == null || !MatterNames.isInfrastructureDeviceType(dtId)) {
+                    nonInfraEps.put(ep, true);
+                }
+            }
+
+            if ((cluster == 40 || cluster == 57) && attr == 5
+                    && entry.getValue() instanceof String s && !s.isBlank()) {
+                epLabels.put(ep, s);
+            }
+        }
+
+        // Only use a non-zero endpoint's label for single non-infrastructure endpoint nodes
+        if (nonInfraEps.size() == 1) {
+            return epLabels.get(nonInfraEps.firstKey());
+        }
+
         return null;
     }
 
@@ -1024,7 +1098,11 @@ class MatterTagProvider implements GatewayTagProvider {
     }
 
     private static boolean isNodeLabelAttribute(String numericPath) {
-        return "0/40/5".equals(numericPath) || "0/57/5".equals(numericPath);
+        String[] parts = numericPath.split("/");
+        if (parts.length != 3) return false;
+        int cluster = Integer.parseInt(parts[1]);
+        int attr = Integer.parseInt(parts[2]);
+        return (cluster == 40 || cluster == 57) && attr == 5;
     }
 
     private void renameNodeFolder(int nodeId, String oldName, String newName) {
@@ -1061,6 +1139,70 @@ class MatterTagProvider implements GatewayTagProvider {
         folderNameToNodeId.put(newName, nodeId);
     }
 
+    private void renameEndpointFolder(int nodeId, String epId, String oldEpName, String newEpName) {
+        String nodeFolder = nodePrefix(nodeId);
+
+        // Rename tags under Nodes/{oldEpName} and Raw Data/{oldEpName}
+        for (String section : new String[]{"Nodes", "Raw Data"}) {
+            String oldPrefix = nodeFolder + "/" + section + "/" + oldEpName;
+            String newPrefix = nodeFolder + "/" + section + "/" + newEpName;
+
+            List<String> oldPaths = new ArrayList<>();
+            for (String key : tags.keySet()) {
+                if (key.equals(oldPrefix) || key.startsWith(oldPrefix + "/")) {
+                    oldPaths.add(key);
+                }
+            }
+
+            for (String oldPath : oldPaths) {
+                String newPath = newPrefix + oldPath.substring(oldPrefix.length());
+                TagNode node = tags.remove(oldPath);
+                if (node != null) {
+                    tags.put(newPath, node);
+                }
+                Set<String> children = childIndex.remove(oldPath);
+                if (children != null) {
+                    childIndex.put(newPath, children);
+                }
+            }
+
+            // Update parent's child set
+            Set<String> sectionChildren = childIndex.get(nodeFolder + "/" + section);
+            if (sectionChildren != null) {
+                sectionChildren.remove(oldEpName);
+                sectionChildren.add(newEpName);
+            }
+        }
+
+        // Update endpoint name cache
+        ConcurrentHashMap<String, String> epNames = endpointNameCache.get(nodeId);
+        if (epNames != null) {
+            epNames.put(epId, newEpName);
+        }
+
+        // Update bidirectional maps: replace old endpoint name prefix with new one
+        ConcurrentHashMap<String, String> n2r = numericToReadable.get(nodeId);
+        ConcurrentHashMap<String, String> r2n = readableToNumeric.get(nodeId);
+        if (n2r != null && r2n != null) {
+            String oldReadablePrefix = oldEpName + "/";
+            String newReadablePrefix = newEpName + "/";
+            List<Map.Entry<String, String>> toUpdate = new ArrayList<>();
+            for (Map.Entry<String, String> entry : n2r.entrySet()) {
+                if (entry.getValue().startsWith(oldReadablePrefix)) {
+                    toUpdate.add(entry);
+                }
+            }
+            for (Map.Entry<String, String> entry : toUpdate) {
+                String numPath = entry.getKey();
+                String oldReadable = entry.getValue();
+                String newReadable = newReadablePrefix + oldReadable.substring(oldReadablePrefix.length());
+                n2r.put(numPath, newReadable);
+                r2n.remove(oldReadable);
+                r2n.put(newReadable, numPath);
+            }
+        }
+    }
+
     private static DataType inferDataType(Object value) {
         if (value instanceof Boolean) return DataType.Boolean;
         if (value instanceof Number) return DataType.Float8;
@@ -1071,6 +1213,20 @@ class MatterTagProvider implements GatewayTagProvider {
         if (value == null) return "";
         if (value instanceof Boolean || value instanceof Number || value instanceof String) return value;
         return gson.toJson(value);
+    }
+
+    /**
+     * Converts raw Matter battery attribute values to human-readable units.
+     * - BatVoltage (11): millivolts -> volts
+     * - BatPercentRemaining (12): half-percent units (0-200) -> percent (0-100)
+     */
+    private static Object convertBatteryValue(int attrId, Object value) {
+        if (!(value instanceof Number num)) return value;
+        return switch (attrId) {
+            case 11 -> num.doubleValue() / 1000.0;   // mV -> V
+            case 12 -> num.doubleValue() / 2.0;       // half-percent -> percent
+            default -> value;
+        };
     }
 
 }
