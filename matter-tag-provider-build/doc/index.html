@@ -1,9 +1,17 @@
 <html>
 <body>
 <h1>Matter Tag Provider</h1>
-<p>This module connects to a python-matter-server instance and exposes Matter smart home device data as Ignition tags.</p>
+<p>This module connects to a <a href="https://github.com/home-assistant-libs/python-matter-server">python-matter-server</a> instance and exposes Matter smart home device data as Ignition tags.</p>
+
 <h2>Configuration</h2>
-<p>Set the Matter server URL via the system property <code>matter.server.url</code> (default: <code>ws://localhost:5580/ws</code>).</p>
-<p>Set the tag provider name via the system property <code>matter.provider.name</code> (default: <code>Matter</code>).</p>
+<p>In the Ignition Gateway web UI, create a new tag provider of type <b>Matter Server</b> under the Tags configuration page. Set:</p>
+<ul>
+    <li><b>Server URL</b> &mdash; WebSocket URL of the python-matter-server (e.g. <code>ws://192.168.1.100:5580/ws</code>, default <code>ws://localhost:5580/ws</code>).</li>
+</ul>
+
+<h2>Tag Tree</h2>
+<p>Tags are exposed under the provider as:</p>
+<pre>Nodes/Node {id}/Attributes/{Endpoint}/{Cluster}/{Attribute}</pre>
+<p>Server metadata (connection status, fabric ID, SDK version, schema version) is available under <code>Server/</code>.</p>
 </body>
 </html>

@@ -57,12 +57,12 @@ import com.kyvislabs.matter.client.MatterClient;
 import com.kyvislabs.matter.client.model.EventType;
 import com.kyvislabs.matter.client.model.MatterNodeData;
 import com.kyvislabs.matter.client.model.ServerInfoMessage;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 class MatterTagProvider implements GatewayTagProvider {
 
-    private static final String MODULE_ID = "com.matter.ignition.matter-tag-provider";
+    private static final String MODULE_ID = MatterTagProviderGatewayHook.MODULE_ID;
 
     private final GatewayContext context;
     private final String name;
@@ -116,7 +116,7 @@ class MatterTagProvider implements GatewayTagProvider {
         this.context = context;
         this.name = name;
         this.serverUrl = settings.serverUrl();
-        this.logger = LogManager.getLogger(getClass().getName() + "." + name);
+        this.logger = LoggerFactory.getLogger(getClass().getName() + "." + name);
     }
 
     // ---- GatewayTagProvider lifecycle ----
@@ -253,7 +253,7 @@ class MatterTagProvider implements GatewayTagProvider {
                 handleAttributeWrite(tagPathToString(paths.get(i)), values.get(i).getValue());
                 results.add(QualityCode.Good);
             } catch (Exception e) {
-                logger.error("Write error: " + paths.get(i), e);
+                logger.error("Write error: {}", paths.get(i), e);
                 results.add(QualityCode.Bad);
             }
         }
@@ -425,14 +425,14 @@ class MatterTagProvider implements GatewayTagProvider {
 
         connectionAttempts.incrementAndGet();
         updateTagValue("Server/ConnectionAttempts", connectionAttempts.get());
-        logger.info("Connecting to Matter server at " + serverUrl);
+        logger.info("Connecting to Matter server at {}", serverUrl);
 
         try {
             matterClient = new MatterClient(serverUrl);
             matterClient.setTimeoutSeconds(30);
 
             ServerInfoMessage serverInfo = matterClient.connect();
-            logger.info("Connected to Matter server '" + name + "': " + serverInfo);
+            logger.info("Connected to Matter server '{}': {}", name, serverInfo);
 
             updateTagValue("Server/Connected", true);
             updateTagValue("Server/FabricId", serverInfo.getFabricId());
@@ -444,13 +444,13 @@ class MatterTagProvider implements GatewayTagProvider {
             matterClient.addEventListener(this::onMatterEvent);
 
             var nodes = matterClient.startListening();
-            logger.info("Received " + nodes.size() + " nodes from '" + name + "'.");
+            logger.info("Received {} nodes from '{}'.", nodes.size(), name);
 
             for (MatterNodeData node : nodes) {
                 buildNodeTags(node);
             }
         } catch (Exception e) {
-            logger.warn("Failed to connect to '" + name + "' at " + serverUrl + ": " + e.getMessage());
+            logger.warn("Failed to connect to '{}' at {}: {}", name, serverUrl, e.getMessage());
             updateTagValue("Server/Connected", false);
             updateTagValue("Server/LastError", e.getMessage() != null ? e.getMessage() : e.toString());
             if (matterClient != null) {
@@ -469,7 +469,7 @@ class MatterTagProvider implements GatewayTagProvider {
             try {
                 matterClient.close();
             } catch (Exception e) {
-                logger.warn("Error closing Matter client for '" + name + "'.", e);
+                logger.warn("Error closing Matter client for '{}'.", name, e);
             }
             matterClient = null;
         }
@@ -513,7 +513,7 @@ class MatterTagProvider implements GatewayTagProvider {
                     }
                 }
                 case SERVER_SHUTDOWN -> {
-                    logger.info("Matter server '" + name + "' is shutting down.");
+                    logger.info("Matter server '{}' is shutting down.", name);
                     updateTagValue("Server/Connected", false);
                     updateTagValue("Server/LastDisconnectedTime", Instant.now().toString());
                 }
@@ -530,7 +530,7 @@ class MatterTagProvider implements GatewayTagProvider {
                 default -> { }
             }
         } catch (Exception e) {
-            logger.error("Error handling Matter event " + eventType + " for '" + name + "'.", e);
+            logger.error("Error handling Matter event {} for '{}'.", eventType, name, e);
         }
     }
 
@@ -997,7 +997,7 @@ class MatterTagProvider implements GatewayTagProvider {
                 try {
                     sub.getListener().tagChanged(new TagChangeEvent(sub.getPath(), node.currentValue));
                 } catch (Exception e) {
-                    logger.debug("Error pushing initial value for " + path, e);
+                    logger.debug("Error pushing initial value for {}", path, e);
                 }
             }
         }
@@ -1014,7 +1014,7 @@ class MatterTagProvider implements GatewayTagProvider {
                 try {
                     sub.getListener().tagChanged(new TagChangeEvent(sub.getPath(), value));
                 } catch (Exception e) {
-                    logger.debug("Error notifying subscriber for " + path, e);
+                    logger.debug("Error notifying subscriber for {}", path, e);
                 }
             }
         }

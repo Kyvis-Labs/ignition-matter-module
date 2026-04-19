@@ -10,6 +10,7 @@
     <packaging>pom</packaging>
 
     <modules>
+        <module>matter-client</module>
         <module>matter-tag-provider-gateway</module>
         <module>matter-tag-provider-build</module>
     </modules>

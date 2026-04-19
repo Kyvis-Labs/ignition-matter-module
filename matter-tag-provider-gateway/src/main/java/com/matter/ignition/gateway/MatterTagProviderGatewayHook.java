@@ -7,18 +7,18 @@ import com.inductiveautomation.ignition.common.licensing.LicenseState;
 import com.inductiveautomation.ignition.gateway.config.ExtensionPoint;
 import com.inductiveautomation.ignition.gateway.model.AbstractGatewayModuleHook;
 import com.inductiveautomation.ignition.gateway.model.GatewayContext;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class MatterTagProviderGatewayHook extends AbstractGatewayModuleHook {
 
-    static final String MODULE_ID = "com.matter.ignition.matter-tag-provider";
+    static final String MODULE_ID = "com.kyvislabs.matter.ignition.matter-tag-provider";
 
     private Logger logger;
 
     @Override
     public void setup(GatewayContext context) {
-        this.logger = LogManager.getLogger(getClass());
+        this.logger = LoggerFactory.getLogger(getClass());
     }
 
     @Override

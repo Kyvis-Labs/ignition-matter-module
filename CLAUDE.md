@@ -20,9 +20,10 @@ The build uses the `ignition-maven-plugin` to package a `.modl` file — the dep
 
 ## Architecture
 
-This is a Maven multi-module project with two submodules:
+This is a Maven multi-module project with three submodules:
 
-- **matter-tag-provider-gateway** — All runtime code. Contains the gateway-scoped module hook and tag provider implementation. Java 17, depends on Ignition SDK (`ignition-common`, `gateway-api`) and `java-matter-client` (`com.kyvislabs.matter`, external library for WebSocket communication with python-matter-server).
+- **matter-client** — Standalone Java WebSocket client for python-matter-server (`com.kyvislabs.matter:java-matter-client`, package `com.kyvislabs.matter.client`). Java 17, depends only on `Java-WebSocket` and `gson`. Has no Ignition dependencies so it can be developed and tested independently.
+- **matter-tag-provider-gateway** — Gateway-scoped runtime code. Contains the module hook and tag provider implementation. Java 17, depends on the Ignition SDK (`ignition-common`, `gateway-api`) and the `matter-client` submodule.
 - **matter-tag-provider-build** — Packaging only. Uses `ignition-maven-plugin` to assemble the `.modl` file from the gateway module. No source code.
 
 ### Key Classes (all in `com.matter.ignition.gateway`)
