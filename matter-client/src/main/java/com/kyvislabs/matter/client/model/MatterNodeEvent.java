@@ -5,7 +5,7 @@ import java.util.Map;
 
 public class MatterNodeEvent {
     @SerializedName("node_id")
-    private int nodeId;
+    private long nodeId;
 
     @SerializedName("endpoint_id")
     private int endpointId;
@@ -31,7 +31,7 @@ public class MatterNodeEvent {
     @SerializedName("data")
     private Map<String, Object> data;
 
-    public int getNodeId() {
+    public long getNodeId() {
         return nodeId;
     }
 
@@ -70,7 +70,7 @@ public class MatterNodeEvent {
     @Override
     public String toString() {
         return "MatterNodeEvent{" +
-                "nodeId=" + nodeId +
+                "nodeId=" + Long.toUnsignedString(nodeId) +
                 ", endpointId=" + endpointId +
                 ", clusterId=" + clusterId +
                 ", eventId=" + eventId +

@@ -1,7 +1,6 @@
 package com.kyvislabs.matter.client;
 
 import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -25,12 +24,12 @@ public class MatterClient implements AutoCloseable {
     private static final Logger LOGGER = LoggerFactory.getLogger(MatterClient.class);
     private static final long DEFAULT_TIMEOUT_SECONDS = 60;
 
-    private final Gson gson = new GsonBuilder().create();
+    private final Gson gson = MatterJson.gson();
     private final MatterClientConnection connection;
     private final AtomicLong messageIdCounter = new AtomicLong(0);
     private final ConcurrentHashMap<String, CompletableFuture<JsonElement>> pendingRequests = new ConcurrentHashMap<>();
     private final CopyOnWriteArrayList<MatterEventListener> eventListeners = new CopyOnWriteArrayList<>();
-    private final ConcurrentHashMap<Integer, MatterNodeData> nodes = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, MatterNodeData> nodes = new ConcurrentHashMap<>();
 
     private long timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
 
@@ -81,11 +80,11 @@ public class MatterClient implements AutoCloseable {
 
     // -- Node access --
 
-    public Map<Integer, MatterNodeData> getNodes() {
+    public Map<Long, MatterNodeData> getNodes() {
         return Collections.unmodifiableMap(nodes);
     }
 
-    public MatterNodeData getNode(int nodeId) {
+    public MatterNodeData getNode(long nodeId) {
         return nodes.get(nodeId);
     }
 
@@ -143,11 +142,11 @@ public class MatterClient implements AutoCloseable {
         sendCommand(APICommand.SET_THREAD_DATASET, args).get(timeoutSeconds, TimeUnit.SECONDS);
     }
 
-    public CommissioningParameters openCommissioningWindow(int nodeId, int timeout,
+    public CommissioningParameters openCommissioningWindow(long nodeId, int timeout,
                                                            int iteration, int option,
                                                            Integer discriminator) throws Exception {
         Map<String, Object> args = new LinkedHashMap<>();
-        args.put("node_id", nodeId);
+        args.put("node_id", MatterJson.unsigned(nodeId));
         args.put("timeout", timeout);
         args.put("iteration", iteration);
         args.put("option", option);
@@ -159,7 +158,7 @@ public class MatterClient implements AutoCloseable {
         return gson.fromJson(result, CommissioningParameters.class);
     }
 
-    public CommissioningParameters openCommissioningWindow(int nodeId) throws Exception {
+    public CommissioningParameters openCommissioningWindow(long nodeId) throws Exception {
         return openCommissioningWindow(nodeId, 300, 1000, 1, null);
     }
 
@@ -168,22 +167,22 @@ public class MatterClient implements AutoCloseable {
         return gson.fromJson(result, new TypeToken<List<CommissionableNodeData>>() {}.getType());
     }
 
-    public void removeNode(int nodeId) throws Exception {
+    public void removeNode(long nodeId) throws Exception {
         Map<String, Object> args = new LinkedHashMap<>();
-        args.put("node_id", nodeId);
+        args.put("node_id", MatterJson.unsigned(nodeId));
         sendCommand(APICommand.REMOVE_NODE, args).get(timeoutSeconds, TimeUnit.SECONDS);
     }
 
-    public void interviewNode(int nodeId) throws Exception {
+    public void interviewNode(long nodeId) throws Exception {
         Map<String, Object> args = new LinkedHashMap<>();
-        args.put("node_id", nodeId);
+        args.put("node_id", MatterJson.unsigned(nodeId));
         sendCommand(APICommand.INTERVIEW_NODE, args).get(timeoutSeconds, TimeUnit.SECONDS);
     }
 
-    public JsonElement sendDeviceCommand(int nodeId, int endpointId, int clusterId,
+    public JsonElement sendDeviceCommand(long nodeId, int endpointId, int clusterId,
                                          String commandName, Map<String, Object> payload) throws Exception {
         Map<String, Object> args = new LinkedHashMap<>();
-        args.put("node_id", nodeId);
+        args.put("node_id", MatterJson.unsigned(nodeId));
         args.put("endpoint_id", endpointId);
         args.put("cluster_id", clusterId);
         args.put("command_name", commandName);
@@ -191,43 +190,43 @@ public class MatterClient implements AutoCloseable {
         return sendCommand(APICommand.DEVICE_COMMAND, args).get(timeoutSeconds, TimeUnit.SECONDS);
     }
 
-    public Map<String, Object> readAttribute(int nodeId, String attributePath) throws Exception {
+    public Map<String, Object> readAttribute(long nodeId, String attributePath) throws Exception {
         Map<String, Object> args = new LinkedHashMap<>();
-        args.put("node_id", nodeId);
+        args.put("node_id", MatterJson.unsigned(nodeId));
         args.put("attribute_path", attributePath);
         JsonElement result = sendCommand(APICommand.READ_ATTRIBUTE, args)
                 .get(timeoutSeconds, TimeUnit.SECONDS);
         return gson.fromJson(result, new TypeToken<Map<String, Object>>() {}.getType());
     }
 
-    public Map<String, Object> readAttribute(int nodeId, List<String> attributePaths) throws Exception {
+    public Map<String, Object> readAttribute(long nodeId, List<String> attributePaths) throws Exception {
         Map<String, Object> args = new LinkedHashMap<>();
-        args.put("node_id", nodeId);
+        args.put("node_id", MatterJson.unsigned(nodeId));
         args.put("attribute_path", attributePaths);
         JsonElement result = sendCommand(APICommand.READ_ATTRIBUTE, args)
                 .get(timeoutSeconds, TimeUnit.SECONDS);
         return gson.fromJson(result, new TypeToken<Map<String, Object>>() {}.getType());
     }
 
-    public void writeAttribute(int nodeId, String attributePath, Object value) throws Exception {
+    public void writeAttribute(long nodeId, String attributePath, Object value) throws Exception {
         Map<String, Object> args = new LinkedHashMap<>();
-        args.put("node_id", nodeId);
+        args.put("node_id", MatterJson.unsigned(nodeId));
         args.put("attribute_path", attributePath);
         args.put("value", value);
         sendCommand(APICommand.WRITE_ATTRIBUTE, args).get(timeoutSeconds, TimeUnit.SECONDS);
     }
 
-    public Map<String, Boolean> pingNode(int nodeId) throws Exception {
+    public Map<String, Boolean> pingNode(long nodeId) throws Exception {
         Map<String, Object> args = new LinkedHashMap<>();
-        args.put("node_id", nodeId);
+        args.put("node_id", MatterJson.unsigned(nodeId));
         JsonElement result = sendCommand(APICommand.PING_NODE, args)
                 .get(timeoutSeconds, TimeUnit.SECONDS);
         return gson.fromJson(result, new TypeToken<Map<String, Boolean>>() {}.getType());
     }
 
-    public List<String> getNodeIpAddresses(int nodeId, boolean preferCache, boolean scoped) throws Exception {
+    public List<String> getNodeIpAddresses(long nodeId, boolean preferCache, boolean scoped) throws Exception {
         Map<String, Object> args = new LinkedHashMap<>();
-        args.put("node_id", nodeId);
+        args.put("node_id", MatterJson.unsigned(nodeId));
         args.put("prefer_cache", preferCache);
         args.put("scoped", scoped);
         JsonElement result = sendCommand(APICommand.GET_NODE_IP_ADDRESSES, args)
@@ -235,13 +234,13 @@ public class MatterClient implements AutoCloseable {
         return gson.fromJson(result, new TypeToken<List<String>>() {}.getType());
     }
 
-    public List<String> getNodeIpAddresses(int nodeId) throws Exception {
+    public List<String> getNodeIpAddresses(long nodeId) throws Exception {
         return getNodeIpAddresses(nodeId, true, false);
     }
 
-    public MatterSoftwareVersion checkNodeUpdate(int nodeId) throws Exception {
+    public MatterSoftwareVersion checkNodeUpdate(long nodeId) throws Exception {
         Map<String, Object> args = new LinkedHashMap<>();
-        args.put("node_id", nodeId);
+        args.put("node_id", MatterJson.unsigned(nodeId));
         JsonElement result = sendCommand(APICommand.CHECK_NODE_UPDATE, args)
                 .get(timeoutSeconds, TimeUnit.SECONDS);
         if (result == null || result.isJsonNull()) {
@@ -250,16 +249,16 @@ public class MatterClient implements AutoCloseable {
         return gson.fromJson(result, MatterSoftwareVersion.class);
     }
 
-    public void updateNode(int nodeId, int softwareVersion) throws Exception {
+    public void updateNode(long nodeId, int softwareVersion) throws Exception {
         Map<String, Object> args = new LinkedHashMap<>();
-        args.put("node_id", nodeId);
+        args.put("node_id", MatterJson.unsigned(nodeId));
         args.put("software_version", softwareVersion);
         sendCommand(APICommand.UPDATE_NODE, args).get(timeoutSeconds, TimeUnit.SECONDS);
     }
 
-    public void updateNode(int nodeId, String softwareVersion) throws Exception {
+    public void updateNode(long nodeId, String softwareVersion) throws Exception {
         Map<String, Object> args = new LinkedHashMap<>();
-        args.put("node_id", nodeId);
+        args.put("node_id", MatterJson.unsigned(nodeId));
         args.put("software_version", softwareVersion);
         sendCommand(APICommand.UPDATE_NODE, args).get(timeoutSeconds, TimeUnit.SECONDS);
     }
@@ -352,11 +351,9 @@ public class MatterClient implements AutoCloseable {
         String eventStr = msg.get("event").getAsString();
         JsonElement data = msg.get("data");
 
-        EventType eventType;
-        try {
-            eventType = EventType.fromValue(eventStr);
-        } catch (IllegalArgumentException e) {
-            LOGGER.warn("Unknown event type: {}", eventStr);
+        EventType eventType = EventType.fromValueOrNull(eventStr);
+        if (eventType == null) {
+            LOGGER.debug("Ignoring unknown event type: {}", eventStr);
             return;
         }
 
@@ -368,15 +365,14 @@ public class MatterClient implements AutoCloseable {
             }
             case NODE_REMOVED -> {
                 if (data != null && !data.isJsonNull()) {
-                    int nodeId = data.getAsInt();
-                    nodes.remove(nodeId);
+                    nodes.remove(MatterJson.nodeId(data));
                 }
             }
             case ATTRIBUTE_UPDATED -> {
                 if (data != null && data.isJsonArray()) {
                     JsonArray arr = data.getAsJsonArray();
                     if (arr.size() >= 3) {
-                        int nodeId = arr.get(0).getAsInt();
+                        long nodeId = MatterJson.nodeId(arr.get(0));
                         String attrPath = arr.get(1).getAsString();
                         MatterNodeData node = nodes.get(nodeId);
                         if (node != null && node.getAttributes() != null) {
