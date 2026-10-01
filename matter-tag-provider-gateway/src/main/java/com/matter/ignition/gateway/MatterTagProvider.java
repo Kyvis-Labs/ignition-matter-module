@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -372,19 +373,52 @@ class MatterTagProvider implements GatewayTagProvider {
             List<TagPath> paths, boolean recursive, boolean localOnly) {
         List<TagConfigurationModel> results = new ArrayList<>(paths.size());
         for (TagPath path : paths) {
-            String key = tagPathToString(path);
-            TagNode node = tags.get(key);
-            if (node == null) {
-                results.add(null);
-                continue;
+            BasicTagConfigurationModel model = buildTagConfig(path, recursive);
+            if (model != null) {
+                results.add(model);
             }
-            BasicTagConfigurationModel model = BasicTagConfigurationModel.newTag(path);
-            model.setType(node.isFolder ? TagObjectType.Folder : TagObjectType.AtomicTag);
-            model.set(WellKnownTagProps.DataType, node.dataType);
-            model.set(WellKnownTagProps.Value, node.currentValue);
-            results.add(model);
         }
         return CompletableFuture.completedFuture(results);
+    }
+
+    /**
+     * Builds the configuration model for {@code path}, nesting the whole subtree beneath it when
+     * recursive. Returns null for a path this provider does not have.
+     *
+     * <p>Two details the gateway's tag export depends on: the returned models must carry their
+     * children via {@link BasicTagConfigurationModel#addChild} rather than being returned as
+     * siblings, and a null must never be put in the result list — the exporter dereferences every
+     * element, so one null fails the whole export.
+     *
+     * <p>The provider root is a special case: it has no {@link TagNode} of its own, existing only
+     * in the child index, yet a recursive export starts there.
+     */
+    private BasicTagConfigurationModel buildTagConfig(TagPath path, boolean recursive) {
+        String key = tagPathToString(path);
+        TagNode node = tags.get(key);
+        boolean isRoot = key.isEmpty();
+        if (node == null && !isRoot) {
+            return null;
+        }
+
+        boolean folder = isRoot || node.isFolder;
+        BasicTagConfigurationModel model = BasicTagConfigurationModel.newTag(path);
+        model.setType(folder ? TagObjectType.Folder : TagObjectType.AtomicTag);
+        if (!folder) {
+            model.set(WellKnownTagProps.DataType, node.dataType);
+            model.set(WellKnownTagProps.Value, node.currentValue);
+        }
+
+        if (recursive && folder) {
+            // Sorted so an export is stable between runs.
+            for (String childName : new TreeSet<>(childIndex.getOrDefault(key, Set.of()))) {
+                BasicTagConfigurationModel child = buildTagConfig(path.getChildPath(childName), recursive);
+                if (child != null) {
+                    model.addChild(child);
+                }
+            }
+        }
+        return model;
     }
 
     @Override
