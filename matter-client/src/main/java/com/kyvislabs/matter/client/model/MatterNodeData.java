@@ -5,7 +5,7 @@ import java.util.Map;
 
 public class MatterNodeData {
     @SerializedName("node_id")
-    private int nodeId;
+    private long nodeId;
 
     @SerializedName("date_commissioned")
     private String dateCommissioned;
@@ -25,7 +25,7 @@ public class MatterNodeData {
     @SerializedName("attributes")
     private Map<String, Object> attributes;
 
-    public int getNodeId() {
+    public long getNodeId() {
         return nodeId;
     }
 
@@ -63,7 +63,7 @@ public class MatterNodeData {
     @Override
     public String toString() {
         return "MatterNodeData{" +
-                "nodeId=" + nodeId +
+                "nodeId=" + Long.toUnsignedString(nodeId) +
                 ", available=" + available +
                 ", isBridge=" + isBridge +
                 ", attributeCount=" + (attributes != null ? attributes.size() : 0) +

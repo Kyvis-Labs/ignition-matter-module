@@ -38,6 +38,7 @@ import com.inductiveautomation.ignition.common.tags.config.model.TagReferenceQue
 import com.inductiveautomation.ignition.common.tags.config.types.TagObjectType;
 import com.inductiveautomation.ignition.common.tags.model.SecurityContext;
 import com.inductiveautomation.ignition.common.tags.model.TagPath;
+import com.inductiveautomation.ignition.common.NamedValue;
 import com.inductiveautomation.ignition.common.tags.model.TagProviderInformation;
 import com.inductiveautomation.ignition.common.tags.model.TagProviderProps;
 import com.inductiveautomation.ignition.common.tags.model.event.TagChangeEvent;
@@ -47,6 +48,9 @@ import com.inductiveautomation.ignition.common.tags.status.TagDiagnostics;
 import com.inductiveautomation.ignition.gateway.historian.TagHistoryQueryInterface;
 import com.inductiveautomation.ignition.gateway.model.GatewayContext;
 import com.inductiveautomation.ignition.gateway.model.ProfileStatus;
+import com.inductiveautomation.ignition.gateway.secrets.Plaintext;
+import com.inductiveautomation.ignition.gateway.secrets.Secret;
+import com.inductiveautomation.ignition.gateway.secrets.SecretConfig;
 import com.inductiveautomation.ignition.gateway.tags.model.GatewayTagProvider;
 import com.inductiveautomation.ignition.gateway.tags.model.TagStructureListener;
 import com.inductiveautomation.ignition.gateway.tags.model.TagSubscription;
@@ -54,6 +58,7 @@ import com.inductiveautomation.ignition.gateway.tags.model.TagSubscriptionChange
 import com.inductiveautomation.ignition.gateway.tags.model.TagSubscriptionChangeListener;
 import com.inductiveautomation.ignition.gateway.tags.model.TagSubscriptionModel;
 import com.kyvislabs.matter.client.MatterClient;
+import com.kyvislabs.matter.client.MatterJson;
 import com.kyvislabs.matter.client.model.EventType;
 import com.kyvislabs.matter.client.model.MatterNodeData;
 import com.kyvislabs.matter.client.model.ServerInfoMessage;
@@ -64,32 +69,36 @@ class MatterTagProvider implements GatewayTagProvider {
 
     private static final String MODULE_ID = MatterTagProviderGatewayHook.MODULE_ID;
 
+    /** Folder holding write-to-trigger command tags, at the root and under each node. */
+    static final String CMD = "Commands";
+
     private final GatewayContext context;
     private final String name;
     private final String serverUrl;
+    private final MatterTagProviderSettings settings;
     private final Logger logger;
-    private final Gson gson = new Gson();
+    private final Gson gson = MatterJson.gson();
 
     private final ConcurrentHashMap<String, TagNode> tags = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Set<String>> childIndex = new ConcurrentHashMap<>();
     private final List<TagStructureListener> structureListeners = new CopyOnWriteArrayList<>();
 
     // numeric attrPath -> readable path segment per node (e.g., "2/1026/0" -> "TemperatureSensor/TemperatureMeasurement/MeasuredValue")
-    private final ConcurrentHashMap<Integer, ConcurrentHashMap<String, String>> numericToReadable = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, ConcurrentHashMap<String, String>> numericToReadable = new ConcurrentHashMap<>();
     // reverse of above for write support
-    private final ConcurrentHashMap<Integer, ConcurrentHashMap<String, String>> readableToNumeric = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, ConcurrentHashMap<String, String>> readableToNumeric = new ConcurrentHashMap<>();
     // endpoint ID -> readable name per node (e.g., "2" -> "TemperatureSensor")
-    private final ConcurrentHashMap<Integer, ConcurrentHashMap<String, String>> endpointNameCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, ConcurrentHashMap<String, String>> endpointNameCache = new ConcurrentHashMap<>();
     // endpoint ID -> device type ID per node (for infrastructure filtering)
-    private final ConcurrentHashMap<Integer, ConcurrentHashMap<String, Integer>> endpointDeviceTypeIdCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, ConcurrentHashMap<String, Integer>> endpointDeviceTypeIdCache = new ConcurrentHashMap<>();
 
-    private final ConcurrentHashMap<Integer, String> nodeFolderNames = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Integer> folderNameToNodeId = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, String> nodeFolderNames = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> folderNameToNodeId = new ConcurrentHashMap<>();
 
     // Raw data toggle state per node
-    private final ConcurrentHashMap<Integer, Boolean> rawDataEnabled = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, Boolean> rawDataEnabled = new ConcurrentHashMap<>();
     // Cached attribute maps per node for building raw data on demand
-    private final ConcurrentHashMap<Integer, ConcurrentHashMap<String, Object>> nodeAttributeCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, ConcurrentHashMap<String, Object>> nodeAttributeCache = new ConcurrentHashMap<>();
 
     private final TagSubscriptionChangeListener subscriptionChangeListener = this::onSubscriptionChanged;
     private TagSubscriptionModel subscriptionModel;
@@ -99,6 +108,9 @@ class MatterTagProvider implements GatewayTagProvider {
     private final AtomicLong eventsReceived = new AtomicLong(0);
     private final AtomicLong attributeWritesSent = new AtomicLong(0);
     private final AtomicLong connectionAttempts = new AtomicLong(0);
+
+    /** Pairing code staged by a write to {@code Commands/CommissionCode}. */
+    private volatile String commissionCode = "";
 
     private static class TagNode {
         final DataType dataType;
@@ -116,7 +128,21 @@ class MatterTagProvider implements GatewayTagProvider {
         this.context = context;
         this.name = name;
         this.serverUrl = settings.serverUrl();
+        this.settings = settings;
         this.logger = LoggerFactory.getLogger(getClass().getName() + "." + name);
+    }
+
+    /**
+     * The live client, for the scripting layer. Commands are rejected rather than queued when the
+     * server is unreachable, so callers get an immediate, obvious failure.
+     */
+    MatterClient requireClient() {
+        MatterClient client = matterClient;
+        if (client == null || !client.isConnected()) {
+            throw new IllegalStateException(
+                    "Matter tag provider '" + name + "' is not connected to " + serverUrl);
+        }
+        return client;
     }
 
     // ---- GatewayTagProvider lifecycle ----
@@ -135,9 +161,10 @@ class MatterTagProvider implements GatewayTagProvider {
     @Override
     public void startup() {
         running = true;
+        MatterProviderRegistry.register(name, this);
 
         putTag("Server/Connected", DataType.Boolean, false);
-        putTag("Server/FabricId", DataType.Int8, 0);
+        putTag("Server/FabricId", DataType.String, "");
         putTag("Server/SDKVersion", DataType.String, "");
         putTag("Server/SchemaVersion", DataType.Int4, 0);
         putTag("Server/URL", DataType.String, serverUrl);
@@ -150,6 +177,17 @@ class MatterTagProvider implements GatewayTagProvider {
         putTag("Server/NodeCount", DataType.Int4, 0);
         putTag("Server/LastError", DataType.String, "");
 
+        putFolder(CMD);
+        putTag(CMD + "/CommissionCode", DataType.String, "");
+        putTag(CMD + "/Commission", DataType.Boolean, false);
+        putTag(CMD + "/Discover", DataType.Boolean, false);
+        putTag(CMD + "/Refresh", DataType.Boolean, false);
+        putTag(CMD + "/LastCommand", DataType.String, "");
+        putTag(CMD + "/LastResult", DataType.String, "");
+        putTag(CMD + "/LastQRCode", DataType.String, "");
+        putTag(CMD + "/LastManualCode", DataType.String, "");
+        putTag(CMD + "/LastError", DataType.String, "");
+
         context.getExecutionManager().register(
                 MODULE_ID, "MatterMaintain-" + name, this::maintainConnection, 10_000);
 
@@ -159,6 +197,7 @@ class MatterTagProvider implements GatewayTagProvider {
     @Override
     public void shutdown() {
         running = false;
+        MatterProviderRegistry.unregister(name);
 
         if (subscriptionModel != null) {
             subscriptionModel.removeListener(name, subscriptionChangeListener);
@@ -264,8 +303,16 @@ class MatterTagProvider implements GatewayTagProvider {
 
     @Override
     public CompletableFuture<TagProviderInformation> getStatusInformation() {
-        String status = ProfileStatus.RUNNING.getMessage().toString();
+        boolean connected = matterClient != null && matterClient.isConnected();
+        String status = connected
+                ? ProfileStatus.RUNNING.getMessage().toString()
+                : "Disconnected from " + serverUrl;
+
         TagProviderInformation info = new TagProviderInformation(name, status, true);
+        // The gateway's provider list reads the tag count out of the "tags" property; without it
+        // the column just says "Not Available".
+        long tagCount = tags.values().stream().filter(node -> !node.isFolder).count();
+        info.setProperties(Map.of("tags", NamedValue.of("tags", (int) tagCount)));
         return CompletableFuture.completedFuture(info);
     }
 
@@ -435,11 +482,13 @@ class MatterTagProvider implements GatewayTagProvider {
             logger.info("Connected to Matter server '{}': {}", name, serverInfo);
 
             updateTagValue("Server/Connected", true);
-            updateTagValue("Server/FabricId", serverInfo.getFabricId());
+            updateTagValue("Server/FabricId", String.valueOf(serverInfo.getFabricId()));
             updateTagValue("Server/SDKVersion", serverInfo.getSdkVersion());
             updateTagValue("Server/SchemaVersion", serverInfo.getSchemaVersion());
             updateTagValue("Server/LastConnectedTime", Instant.now().toString());
             updateTagValue("Server/LastError", "");
+
+            pushCommissioningCredentials();
 
             matterClient.addEventListener(this::onMatterEvent);
 
@@ -461,6 +510,56 @@ class MatterTagProvider implements GatewayTagProvider {
                 }
                 matterClient = null;
             }
+        }
+    }
+
+    /**
+     * Hands the server any configured network credentials so BLE commissioning can join new
+     * devices to the right network. Both are optional, and a failure here must not fail the
+     * connection — monitoring still works without them.
+     */
+    private void pushCommissioningCredentials() {
+        if (settings.hasWifiSsid()) {
+            String password = revealSecret(settings.wifiPassword(), "Wi-Fi password");
+            if (password != null) {
+                try {
+                    matterClient.setWifiCredentials(settings.wifiSsid(), password);
+                    logger.info("Set Wi-Fi commissioning credentials for SSID '{}' on '{}'.",
+                            settings.wifiSsid(), name);
+                } catch (Exception e) {
+                    logger.warn("Could not set Wi-Fi commissioning credentials on '{}': {}",
+                            name, e.getMessage());
+                }
+            }
+        }
+
+        String dataset = revealSecret(settings.threadDataset(), "Thread dataset");
+        if (dataset != null) {
+            try {
+                matterClient.setThreadDataset(dataset);
+                logger.info("Set Thread commissioning dataset on '{}'.", name);
+            } catch (Exception e) {
+                logger.warn("Could not set Thread commissioning dataset on '{}': {}",
+                        name, e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Resolves a configured secret, whether it is stored inline or as a reference to a secret
+     * provider. Returns null when unset or unreadable; credentials are optional, so a failure here
+     * must not stop monitoring. The plaintext is cleared as soon as it has been handed over.
+     */
+    private String revealSecret(SecretConfig config, String what) {
+        if (config == null) {
+            return null;
+        }
+        try (Plaintext plaintext = Secret.create(context, config).getPlaintext()) {
+            String value = plaintext.getAsString();
+            return value == null || value.isBlank() ? null : value;
+        } catch (Exception e) {
+            logger.warn("Could not read the configured {} for '{}': {}", what, name, e.getMessage());
+            return null;
         }
     }
 
@@ -498,14 +597,14 @@ class MatterTagProvider implements GatewayTagProvider {
                 }
                 case NODE_REMOVED -> {
                     if (data != null && !data.isJsonNull()) {
-                        removeNodeTags(data.getAsInt());
+                        removeNodeTags(MatterJson.nodeId(data));
                     }
                 }
                 case ATTRIBUTE_UPDATED -> {
                     if (data != null && data.isJsonArray()) {
                         JsonArray arr = data.getAsJsonArray();
                         if (arr.size() >= 3) {
-                            int nodeId = arr.get(0).getAsInt();
+                            long nodeId = MatterJson.nodeId(arr.get(0));
                             String attrPath = arr.get(1).getAsString();
                             Object value = gson.fromJson(arr.get(2), Object.class);
                             configureAndUpdateAttributeTag(nodeId, attrPath, value);
@@ -521,7 +620,7 @@ class MatterTagProvider implements GatewayTagProvider {
                     if (matterClient != null) {
                         ServerInfoMessage info = matterClient.getServerInfo();
                         if (info != null) {
-                            updateTagValue("Server/FabricId", info.getFabricId());
+                            updateTagValue("Server/FabricId", String.valueOf(info.getFabricId()));
                             updateTagValue("Server/SDKVersion", info.getSdkVersion());
                             updateTagValue("Server/SchemaVersion", info.getSchemaVersion());
                         }
@@ -537,7 +636,7 @@ class MatterTagProvider implements GatewayTagProvider {
     // ---- Tag tree building ----
 
     private void buildNodeTags(MatterNodeData node) {
-        int nodeId = node.getNodeId();
+        long nodeId = node.getNodeId();
         Map<String, Object> attributes = node.getAttributes() != null ? node.getAttributes() : Map.of();
 
         String newFolderName = computeNodeFolderName(nodeId, attributes);
@@ -558,6 +657,12 @@ class MatterTagProvider implements GatewayTagProvider {
 
         putTag(prefix + "/Available", DataType.Boolean, node.isAvailable());
         putTag(prefix + "/ShowRawData", DataType.Boolean, wasRawDataEnabled);
+
+        putFolder(prefix + "/" + CMD);
+        putTag(prefix + "/" + CMD + "/OpenCommissioningWindow", DataType.Boolean, false);
+        putTag(prefix + "/" + CMD + "/Interview", DataType.Boolean, false);
+        putTag(prefix + "/" + CMD + "/Ping", DataType.Boolean, false);
+        putTag(prefix + "/" + CMD + "/CheckUpdate", DataType.Boolean, false);
         rawDataEnabled.put(nodeId, wasRawDataEnabled);
 
         // Cache attributes for raw data (ConcurrentHashMap doesn't allow null values)
@@ -710,7 +815,7 @@ class MatterTagProvider implements GatewayTagProvider {
         updateTagValue("Server/NodeCount", nodeFolderNames.size());
     }
 
-    private void removeNodeTags(int nodeId) {
+    private void removeNodeTags(long nodeId) {
         String prefix = nodePrefix(nodeId);
 
         tags.keySet().removeIf(k -> k.equals(prefix) || k.startsWith(prefix + "/"));
@@ -719,7 +824,7 @@ class MatterTagProvider implements GatewayTagProvider {
         String folderName = nodeFolderNames.remove(nodeId);
         Set<String> rootChildren = childIndex.get("");
         if (rootChildren != null) {
-            rootChildren.remove(folderName != null ? folderName : "Node " + nodeId);
+            rootChildren.remove(folderName != null ? folderName : nodeLabel(nodeId));
         }
         if (folderName != null) {
             folderNameToNodeId.remove(folderName);
@@ -735,7 +840,7 @@ class MatterTagProvider implements GatewayTagProvider {
         updateTagValue("Server/NodeCount", nodeFolderNames.size());
     }
 
-    private void configureAndUpdateAttributeTag(int nodeId, String numericPath, Object value) {
+    private void configureAndUpdateAttributeTag(long nodeId, String numericPath, Object value) {
         // Update attribute cache first so label computations see the latest value
         ConcurrentHashMap<String, Object> cache = nodeAttributeCache.get(nodeId);
         if (cache != null && value != null) {
@@ -856,16 +961,27 @@ class MatterTagProvider implements GatewayTagProvider {
             throw new IllegalArgumentException("Invalid tag path: " + tagPath);
         }
 
+        // Root-level commands live outside the node folders, so resolve them first.
+        if (CMD.equals(parts[0])) {
+            handleRootCommandWrite(parts, value);
+            return;
+        }
+
         String folderName = parts[0];
-        Integer nodeIdObj = folderNameToNodeId.get(folderName);
+        Long nodeIdObj = folderNameToNodeId.get(folderName);
         if (nodeIdObj == null) {
             throw new IllegalArgumentException("Cannot resolve node ID from folder: " + folderName);
         }
-        int nodeId = nodeIdObj;
+        long nodeId = nodeIdObj;
 
         // ShowRawData toggle
         if (parts.length == 2 && "ShowRawData".equals(parts[1])) {
             handleShowRawDataWrite(nodeId, value);
+            return;
+        }
+
+        if (parts.length == 3 && CMD.equals(parts[1])) {
+            handleNodeCommandWrite(nodeId, parts[2], value);
             return;
         }
 
@@ -897,9 +1013,120 @@ class MatterTagProvider implements GatewayTagProvider {
         }
     }
 
+    // ---- Commands ----
+
+    /**
+     * Commands are write-to-trigger: any truthy write runs the command and the tag snaps back to
+     * false. They run on the execution manager because commissioning can block for the whole
+     * client timeout, and {@code writeAsync} must not stall a tag write thread that long.
+     */
+    private void handleRootCommandWrite(String[] parts, Object value) {
+        if (parts.length != 2) {
+            throw new IllegalArgumentException("Unknown command tag: " + String.join("/", parts));
+        }
+        String command = parts[1];
+
+        if ("CommissionCode".equals(command)) {
+            commissionCode = value == null ? "" : String.valueOf(value);
+            updateTagValue(CMD + "/CommissionCode", commissionCode);
+            return;
+        }
+        if (!isTriggered(value)) {
+            return;
+        }
+
+        switch (command) {
+            case "Commission" -> runCommand("Commission", () -> {
+                String code = commissionCode;
+                if (code == null || code.isBlank()) {
+                    throw new IllegalStateException("Write the pairing code to " + CMD
+                            + "/CommissionCode before triggering " + CMD + "/Commission");
+                }
+                MatterNodeData node = requireClient().commissionWithCode(code);
+                return "Commissioned node " + Long.toUnsignedString(node.getNodeId());
+            });
+            case "Discover" -> runCommand("Discover", () -> {
+                var found = requireClient().discoverCommissionableNodes();
+                return found.isEmpty() ? "No commissionable devices found"
+                        : found.size() + " commissionable device(s): " + gson.toJson(found);
+            });
+            case "Refresh" -> runCommand("Refresh", () -> {
+                var nodes = requireClient().startListening();
+                for (MatterNodeData node : nodes) {
+                    buildNodeTags(node);
+                }
+                return "Refreshed " + nodes.size() + " node(s)";
+            });
+            default -> throw new IllegalArgumentException("Unknown command tag: " + CMD + "/" + command);
+        }
+    }
+
+    private void handleNodeCommandWrite(long nodeId, String command, Object value) {
+        String label = nodeLabel(nodeId);
+        if (!isTriggered(value)) {
+            return;
+        }
+        switch (command) {
+            case "OpenCommissioningWindow" -> runCommand(label + " OpenCommissioningWindow", () -> {
+                var params = requireClient().openCommissioningWindow(nodeId);
+                updateTagValue(CMD + "/LastQRCode", nullToEmpty(params.getSetupQrCode()));
+                updateTagValue(CMD + "/LastManualCode", nullToEmpty(params.getSetupManualCode()));
+                return "Commissioning window open; manual code "
+                        + nullToEmpty(params.getSetupManualCode());
+            });
+            case "Interview" -> runCommand(label + " Interview", () -> {
+                requireClient().interviewNode(nodeId);
+                return "Interview complete";
+            });
+            case "Ping" -> runCommand(label + " Ping", () -> {
+                var result = requireClient().pingNode(nodeId);
+                return "Ping: " + result;
+            });
+            case "CheckUpdate" -> runCommand(label + " CheckUpdate", () -> {
+                var update = requireClient().checkNodeUpdate(nodeId);
+                return update == null ? "No update available" : "Update available: " + gson.toJson(update);
+            });
+            default -> throw new IllegalArgumentException(
+                    "Unknown command tag: " + label + "/" + CMD + "/" + command);
+        }
+    }
+
+    /** A command tag fires on any truthy write; booleans, numbers and strings are all accepted. */
+    private static boolean isTriggered(Object value) {
+        if (value == null) return false;
+        if (value instanceof Boolean b) return b;
+        if (value instanceof Number n) return n.doubleValue() != 0;
+        return Boolean.parseBoolean(String.valueOf(value)) || "1".equals(String.valueOf(value));
+    }
+
+    private static String nullToEmpty(String s) {
+        return s == null ? "" : s;
+    }
+
+    private interface Command {
+        String run() throws Exception;
+    }
+
+    private void runCommand(String label, Command command) {
+        updateTagValue(CMD + "/LastCommand", label);
+        context.getExecutionManager().executeOnce(() -> {
+            try {
+                String result = command.run();
+                logger.info("Command '{}' on '{}': {}", label, name, result);
+                updateTagValue(CMD + "/LastResult", result);
+                updateTagValue(CMD + "/LastError", "");
+            } catch (Exception e) {
+                String message = e.getMessage() != null ? e.getMessage() : e.toString();
+                logger.warn("Command '{}' on '{}' failed: {}", label, name, message, e);
+                updateTagValue(CMD + "/LastResult", "");
+                updateTagValue(CMD + "/LastError", message);
+            }
+        });
+    }
+
     // ---- Raw data toggle ----
 
-    private void handleShowRawDataWrite(int nodeId, Object value) {
+    private void handleShowRawDataWrite(long nodeId, Object value) {
         boolean enabled = Boolean.TRUE.equals(value) || "true".equalsIgnoreCase(String.valueOf(value));
         rawDataEnabled.put(nodeId, enabled);
 
@@ -913,7 +1140,7 @@ class MatterTagProvider implements GatewayTagProvider {
         }
     }
 
-    private void buildRawDataTags(int nodeId) {
+    private void buildRawDataTags(long nodeId) {
         ConcurrentHashMap<String, Object> attributes = nodeAttributeCache.get(nodeId);
         if (attributes == null) return;
 
@@ -932,7 +1159,7 @@ class MatterTagProvider implements GatewayTagProvider {
         }
     }
 
-    private void removeRawDataTags(int nodeId) {
+    private void removeRawDataTags(long nodeId) {
         String prefix = nodePrefix(nodeId);
         String rawPrefix = prefix + "/Raw Data";
 
@@ -1032,8 +1259,13 @@ class MatterTagProvider implements GatewayTagProvider {
 
     // ---- Utilities ----
 
-    private String nodePrefix(int nodeId) {
-        return nodeFolderNames.getOrDefault(nodeId, "Node " + nodeId);
+    /** Node IDs are unsigned 64-bit; {@code Long.toString} would render matter.js test nodes negative. */
+    private static String nodeLabel(long nodeId) {
+        return "Node " + Long.toUnsignedString(nodeId);
+    }
+
+    private String nodePrefix(long nodeId) {
+        return nodeFolderNames.getOrDefault(nodeId, nodeLabel(nodeId));
     }
 
     private static String extractNodeLabel(Map<String, Object> attributes) {
@@ -1081,16 +1313,20 @@ class MatterTagProvider implements GatewayTagProvider {
         return null;
     }
 
-    private String computeNodeFolderName(int nodeId, Map<String, Object> attributes) {
+    private String computeNodeFolderName(long nodeId, Map<String, Object> attributes) {
         String label = extractNodeLabel(attributes);
         if (label == null) {
-            return "Node " + nodeId;
+            return nodeLabel(nodeId);
         }
         String sanitized = label.replace("/", "_").strip();
-        if (sanitized.isEmpty()) {
-            return "Node " + nodeId;
+        if (sanitized.equals("Server") || sanitized.equals(CMD)) {
+            // Reserved root folder names; disambiguate rather than shadow them.
+            return sanitized + " (" + nodeLabel(nodeId) + ")";
         }
-        Integer existing = folderNameToNodeId.get(sanitized);
+        if (sanitized.isEmpty()) {
+            return nodeLabel(nodeId);
+        }
+        Long existing = folderNameToNodeId.get(sanitized);
         if (existing != null && existing != nodeId) {
             sanitized = sanitized + " (Node " + nodeId + ")";
         }
@@ -1105,7 +1341,7 @@ class MatterTagProvider implements GatewayTagProvider {
         return (cluster == 40 || cluster == 57) && attr == 5;
     }
 
-    private void renameNodeFolder(int nodeId, String oldName, String newName) {
+    private void renameNodeFolder(long nodeId, String oldName, String newName) {
         String oldPrefix = oldName;
         String newPrefix = newName;
 
@@ -1139,7 +1375,7 @@ class MatterTagProvider implements GatewayTagProvider {
         folderNameToNodeId.put(newName, nodeId);
     }
 
-    private void renameEndpointFolder(int nodeId, String epId, String oldEpName, String newEpName) {
+    private void renameEndpointFolder(long nodeId, String epId, String oldEpName, String newEpName) {
         String nodeFolder = nodePrefix(nodeId);
 
         // Rename tags under Nodes/{oldEpName} and Raw Data/{oldEpName}

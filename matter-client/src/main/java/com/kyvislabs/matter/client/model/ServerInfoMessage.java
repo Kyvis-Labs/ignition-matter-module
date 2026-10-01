@@ -2,12 +2,14 @@ package com.kyvislabs.matter.client.model;
 
 import com.google.gson.annotations.SerializedName;
 
+import java.math.BigInteger;
+
 public class ServerInfoMessage {
     @SerializedName("fabric_id")
-    private long fabricId;
+    private BigInteger fabricId;
 
     @SerializedName("compressed_fabric_id")
-    private long compressedFabricId;
+    private BigInteger compressedFabricId;
 
     @SerializedName("schema_version")
     private int schemaVersion;
@@ -27,11 +29,11 @@ public class ServerInfoMessage {
     @SerializedName("bluetooth_enabled")
     private boolean bluetoothEnabled;
 
-    public long getFabricId() {
+    public BigInteger getFabricId() {
         return fabricId;
     }
 
-    public long getCompressedFabricId() {
+    public BigInteger getCompressedFabricId() {
         return compressedFabricId;
     }
 
