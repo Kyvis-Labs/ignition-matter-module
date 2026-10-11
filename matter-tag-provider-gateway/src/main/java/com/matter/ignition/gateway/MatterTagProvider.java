@@ -837,7 +837,14 @@ class MatterTagProvider implements GatewayTagProvider {
             // 6. Skip non-allowed clusters
             if (!MatterNames.isAllowedCluster(clusterId)) continue;
 
-            // 7. Regular filtered tag
+            // 7. Regular filtered tag. Electrical metering arrives in milli-units
+            // (and energy as a struct), so convert from the RAW value -- tagValue has
+            // already been JSON-stringified for non-scalars by convertValue().
+            Object filteredValue = convertElectricalValue(clusterId, attrId, entry.getValue());
+            if (filteredValue != tagValue) {
+                putTag(prefix + "/Nodes/" + readablePath, inferDataType(filteredValue), filteredValue);
+                continue;
+            }
             putTag(prefix + "/Nodes/" + readablePath, dataType, tagValue);
         }
 
@@ -1483,6 +1490,38 @@ class MatterTagProvider implements GatewayTagProvider {
         if (value == null) return "";
         if (value instanceof Boolean || value instanceof Number || value instanceof String) return value;
         return gson.toJson(value);
+    }
+
+    /**
+     * Converts ElectricalPowerMeasurement (144) and ElectricalEnergyMeasurement (145)
+     * values into engineering units.
+     *
+     * <p>Matter reports these in milli-units, so a plug reading 122.5 V arrives as
+     * 122500 and 60.045 Hz as 60045. Energy is worse: it is a struct, so without this it
+     * lands as the JSON string {@code {"0":0}} -- present in the tag tree but impossible
+     * to trend or alarm on. Field "0" of that struct is the energy in mWh.
+     *
+     * <p>Returns the input unchanged when nothing applies, which is how the caller
+     * detects that no conversion happened.
+     */
+    private static Object convertElectricalValue(int clusterId, int attrId, Object raw) {
+        if (clusterId == 145) {
+            // CumulativeEnergyImported/Exported, PeriodicEnergyImported/Exported
+            if (attrId < 1 || attrId > 4) return raw;
+            if (!(raw instanceof Map<?, ?> struct)) return raw;
+            Object energy = struct.get("0");
+            if (energy == null) energy = struct.get(0);
+            if (!(energy instanceof Number num)) return raw;
+            return num.doubleValue() / 1000.0;          // mWh -> Wh
+        }
+        if (clusterId != 144 || !(raw instanceof Number num)) return raw;
+        return switch (attrId) {
+            case 4, 11 -> num.doubleValue() / 1000.0;   // mV  -> V   (Voltage, RmsVoltage)
+            case 5, 6, 7, 12, 18 -> num.doubleValue() / 1000.0; // mA -> A
+            case 8, 9, 10, 13 -> num.doubleValue() / 1000.0;    // mW -> W
+            case 14 -> num.doubleValue() / 1000.0;      // mHz -> Hz
+            default -> raw;                             // PowerMode, Accuracy, Ranges, ...
+        };
     }
 
     /**

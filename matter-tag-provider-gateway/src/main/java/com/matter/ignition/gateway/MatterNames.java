@@ -119,6 +119,11 @@ class MatterNames {
             Map.entry(45, "UnitLocalization"),
             Map.entry(46, "PowerSourceConfiguration"),
             Map.entry(47, "PowerSource"),
+            // Electrical metering. Absent before, so a metering plug published its
+            // power under "Cluster_144" even once the cluster was allowed through.
+            Map.entry(144, "ElectricalPowerMeasurement"),
+            Map.entry(145, "ElectricalEnergyMeasurement"),
+            Map.entry(156, "PowerTopology"),
             Map.entry(48, "GeneralCommissioning"),
             Map.entry(49, "NetworkCommissioning"),
             Map.entry(50, "DiagnosticLogs"),
@@ -151,6 +156,35 @@ class MatterNames {
     );
 
     private static final Map<String, String> ATTR_NAMES = Map.ofEntries(
+            // Electrical metering names, generated from the matter.js model
+            // (@matter/model standard/elements/*.element.js) rather than hand-typed.
+            Map.entry("144/0", "PowerMode"),
+            Map.entry("144/1", "NumberOfMeasurementTypes"),
+            Map.entry("144/2", "Accuracy"),
+            Map.entry("144/3", "Ranges"),
+            Map.entry("144/4", "Voltage"),
+            Map.entry("144/5", "ActiveCurrent"),
+            Map.entry("144/6", "ReactiveCurrent"),
+            Map.entry("144/7", "ApparentCurrent"),
+            Map.entry("144/8", "ActivePower"),
+            Map.entry("144/9", "ReactivePower"),
+            Map.entry("144/10", "ApparentPower"),
+            Map.entry("144/11", "RmsVoltage"),
+            Map.entry("144/12", "RmsCurrent"),
+            Map.entry("144/13", "RmsPower"),
+            Map.entry("144/14", "Frequency"),
+            Map.entry("144/15", "HarmonicCurrents"),
+            Map.entry("144/16", "HarmonicPhases"),
+            Map.entry("144/17", "PowerFactor"),
+            Map.entry("144/18", "NeutralCurrent"),
+            Map.entry("145/0", "Accuracy"),
+            Map.entry("145/1", "CumulativeEnergyImported"),
+            Map.entry("145/2", "CumulativeEnergyExported"),
+            Map.entry("145/3", "PeriodicEnergyImported"),
+            Map.entry("145/4", "PeriodicEnergyExported"),
+            Map.entry("145/5", "CumulativeEnergyReset"),
+            Map.entry("156/0", "AvailableEndpoints"),
+            Map.entry("156/1", "ActiveEndpoints"),
             // Descriptor (29)
             Map.entry("29/0", "DeviceTypeList"),
             Map.entry("29/1", "ServerList"),
@@ -293,7 +327,11 @@ class MatterNames {
             1027, // PressureMeasurement
             1028, // FlowMeasurement
             1029, // RelativeHumidityMeasurement
-            1030  // OccupancySensing
+            1030, // OccupancySensing
+            // Metering, added 2026-10-11. Without these a Shelly Plug US Gen4 exposed
+            // only OnOff -- its watts, volts and kWh were filtered out silently.
+            144,  // ElectricalPowerMeasurement
+            145   // ElectricalEnergyMeasurement
     );
 
     // Global attribute IDs always skipped from filtered view
