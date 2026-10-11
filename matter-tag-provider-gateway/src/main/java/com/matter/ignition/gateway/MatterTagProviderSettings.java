@@ -39,11 +39,13 @@ public record MatterTagProviderSettings(
 
         @FormCategory("COMMISSIONING")
         @Label("Wi-Fi Password")
+        @FormField(FormFieldType.SECRET)
         @Description("Optional. Only used when commissioning Wi-Fi devices.")
         SecretConfig wifiPassword,
 
         @FormCategory("COMMISSIONING")
         @Label("Thread Dataset")
+        @FormField(FormFieldType.SECRET)
         @Description("Optional hex-encoded Thread operational dataset, used when commissioning "
                 + "Thread devices. Note that matterjs-server cannot commission Thread devices "
                 + "directly yet — use multi-admin from an existing ecosystem instead.")
