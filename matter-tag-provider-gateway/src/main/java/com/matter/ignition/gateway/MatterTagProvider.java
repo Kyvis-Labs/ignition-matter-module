@@ -2,6 +2,7 @@ package com.matter.ignition.gateway;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -1484,12 +1485,14 @@ class MatterTagProvider implements GatewayTagProvider {
     private static DataType inferDataType(Object value) {
         if (value instanceof Boolean) return DataType.Boolean;
         if (value instanceof Number) return DataType.Float8;
+        if (value instanceof Date) return DataType.DateTime;
         return DataType.String;
     }
 
     private Object convertValue(Object value) {
         if (value == null) return "";
-        if (value instanceof Boolean || value instanceof Number || value instanceof String) return value;
+        if (value instanceof Boolean || value instanceof Number || value instanceof String
+                || value instanceof Date) return value;
         return gson.toJson(value);
     }
 
@@ -1544,8 +1547,23 @@ class MatterTagProvider implements GatewayTagProvider {
             if (type.endsWith(milli)) return num.doubleValue() / 1000.0;
         }
         if ("percent100ths".equals(type)) return num.doubleValue() / 100.0;
+        // Matter epochs count from 2000-01-01, NOT 1970. Published raw, a timestamp
+        // reads thirty years early -- 845062140 looks like 1996 rather than 2026.
+        if ("epoch-s".equals(type)) {
+            return Date.from(MATTER_EPOCH.plusSeconds(num.longValue()));
+        }
+        if ("epoch-us".equals(type)) {
+            long us = num.longValue();
+            return Date.from(MATTER_EPOCH.plusSeconds(us / 1_000_000L)
+                    .plusNanos((us % 1_000_000L) * 1_000L));
+        }
+        // systime-ms is milliseconds since the DEVICE booted, not wall clock, so it is
+        // deliberately left as a number.
         return value;
     }
+
+    /** 2000-01-01T00:00:00Z, the Matter epoch. */
+    private static final Instant MATTER_EPOCH = Instant.parse("2000-01-01T00:00:00Z");
 
     private static final List<String> MILLI_SUFFIXES =
             List.of("-mV", "-mA", "-mW", "-mVA", "-mVAR", "-mWh", "-mVAh", "-mVARh", "-mHz");
