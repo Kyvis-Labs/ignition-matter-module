@@ -837,12 +837,13 @@ class MatterTagProvider implements GatewayTagProvider {
             // 6. Skip non-allowed clusters
             if (!MatterNames.isAllowedCluster(clusterId)) continue;
 
-            // 7. Regular filtered tag. Electrical metering arrives in milli-units
-            // (and energy as a struct), so convert from the RAW value -- tagValue has
-            // already been JSON-stringified for non-scalars by convertValue().
-            Object filteredValue = convertElectricalValue(clusterId, attrId, entry.getValue());
-            if (filteredValue != tagValue) {
-                putTag(prefix + "/Nodes/" + readablePath, inferDataType(filteredValue), filteredValue);
+            // 7. Regular filtered tag. When the model describes the attribute's type,
+            // expand structs and lists into child tags and apply units -- working from
+            // the RAW value, because convertValue() has already stringified non-scalars.
+            String attrType = unitOverride(clusterId, attrId);
+            if (attrType == null) attrType = MatterStructs.ATTR_TYPES.get(clusterId + "/" + attrId);
+            if (attrType != null) {
+                putValueTags(prefix + "/Nodes/" + readablePath, entry.getValue(), attrType);
                 continue;
             }
             putTag(prefix + "/Nodes/" + readablePath, dataType, tagValue);
@@ -1493,35 +1494,69 @@ class MatterTagProvider implements GatewayTagProvider {
     }
 
     /**
-     * Converts ElectricalPowerMeasurement (144) and ElectricalEnergyMeasurement (145)
-     * values into engineering units.
+     * Publishes an attribute value, expanding structs and lists into real child tags
+     * rather than a JSON string.
      *
-     * <p>Matter reports these in milli-units, so a plug reading 122.5 V arrives as
-     * 122500 and 60.045 Hz as 60045. Energy is worse: it is a struct, so without this it
-     * lands as the JSON string {@code {"0":0}} -- present in the tag tree but impossible
-     * to trend or alarm on. Field "0" of that struct is the energy in mWh.
+     * <p>Matter serialises struct fields by numeric index, so {@code
+     * CumulativeEnergyImported} arrives as {@code {"0":0,"1":845061000}}. Rendered as a
+     * string that is visible but impossible to trend or alarm on; expanded, it becomes
+     * {@code .../CumulativeEnergyImported/Energy} and {@code .../StartTimestamp}.
      *
-     * <p>Returns the input unchanged when nothing applies, which is how the caller
-     * detects that no conversion happened.
+     * <p>Lists are indexed from 0, so the five entries of {@code Accuracy} land under
+     * {@code Accuracy/0..4}.
      */
-    private static Object convertElectricalValue(int clusterId, int attrId, Object raw) {
-        if (clusterId == 145) {
-            // CumulativeEnergyImported/Exported, PeriodicEnergyImported/Exported
-            if (attrId < 1 || attrId > 4) return raw;
-            if (!(raw instanceof Map<?, ?> struct)) return raw;
-            Object energy = struct.get("0");
-            if (energy == null) energy = struct.get(0);
-            if (!(energy instanceof Number num)) return raw;
-            return num.doubleValue() / 1000.0;          // mWh -> Wh
+    private void putValueTags(String path, Object value, String type) {
+        String declared = type == null ? "" : type;
+
+        if (declared.startsWith("list:") && value instanceof List<?> list) {
+            String element = declared.substring(5);
+            for (int i = 0; i < list.size(); i++) {
+                putValueTags(path + "/" + i, list.get(i), element);
+            }
+            return;
         }
-        if (clusterId != 144 || !(raw instanceof Number num)) return raw;
-        return switch (attrId) {
-            case 4, 11 -> num.doubleValue() / 1000.0;   // mV  -> V   (Voltage, RmsVoltage)
-            case 5, 6, 7, 12, 18 -> num.doubleValue() / 1000.0; // mA -> A
-            case 8, 9, 10, 13 -> num.doubleValue() / 1000.0;    // mW -> W
-            case 14 -> num.doubleValue() / 1000.0;      // mHz -> Hz
-            default -> raw;                             // PowerMode, Accuracy, Ranges, ...
-        };
+
+        List<String> fields = MatterStructs.STRUCT_FIELDS.get(declared);
+        if (fields != null && value instanceof Map<?, ?> struct) {
+            for (String spec : fields) {
+                String[] parts = spec.split("\\|", -1);
+                Object child = struct.get(parts[0]);
+                if (child == null) child = struct.get(Integer.valueOf(parts[0]));
+                if (child == null) continue;   // optional field the device omitted
+                putValueTags(path + "/" + parts[1], child, parts[2]);
+            }
+            return;
+        }
+
+        Object converted = convertByType(declared, value);
+        putTag(path, inferDataType(converted), convertValue(converted));
+    }
+
+    /**
+     * Converts a value using the unit encoded in its declared type, so a new cluster
+     * gets correct engineering units without any code change. Matter spells the unit
+     * into the type name: voltage-mV, amperage-mA, power-mW/mVA/mVAR,
+     * energy-mWh/mVAh/mVARh, percent100ths.
+     */
+    private static Object convertByType(String type, Object value) {
+        if (!(value instanceof Number num)) return value;
+        for (String milli : MILLI_SUFFIXES) {
+            if (type.endsWith(milli)) return num.doubleValue() / 1000.0;
+        }
+        if ("percent100ths".equals(type)) return num.doubleValue() / 100.0;
+        return value;
+    }
+
+    private static final List<String> MILLI_SUFFIXES =
+            List.of("-mV", "-mA", "-mW", "-mVA", "-mVAR", "-mWh", "-mVAh", "-mVARh", "-mHz");
+
+    /**
+     * Units the model does not encode. Frequency is typed int64 there, but the spec
+     * unit is mHz -- without this a 60 Hz supply reads 60045.
+     */
+    private static String unitOverride(int clusterId, int attrId) {
+        if (clusterId == 144 && attrId == 14) return "frequency-mHz";
+        return null;
     }
 
     /**
