@@ -19,8 +19,11 @@
         <ignition-platform-version>8.3.9</ignition-platform-version>
         <ignition-sdk-version>${ignition-platform-version}</ignition-sdk-version>
         <java-matter-client-version>0.1.0</java-matter-client-version>
-        <maven.build.timestamp.format>yyyyMMddHH</maven.build.timestamp.format>
-        <module-base-version>0.1.0</module-base-version>
+        <!-- Minute resolution: with hour resolution two builds in the same hour produce
+         an IDENTICAL module version, so there is no way to tell from the gateway log
+         whether a redeploy actually took effect. -->
+        <maven.build.timestamp.format>yyyyMMddHHmm</maven.build.timestamp.format>
+        <module-base-version>0.1.1</module-base-version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     </properties>
