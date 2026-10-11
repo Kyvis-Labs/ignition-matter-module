@@ -844,6 +844,8 @@ class MatterTagProvider implements GatewayTagProvider {
             String attrType = unitOverride(clusterId, attrId);
             if (attrType == null) attrType = MatterStructs.ATTR_TYPES.get(clusterId + "/" + attrId);
             if (attrType != null) {
+                // Accuracy/Ranges describe the device's own precision, not a measurement.
+                if (isMeasurementMetadata(attrType)) continue;
                 putValueTags(prefix + "/Nodes/" + readablePath, entry.getValue(), attrType);
                 continue;
             }
@@ -992,7 +994,19 @@ class MatterTagProvider implements GatewayTagProvider {
         // 6. Skip non-allowed clusters
         if (!MatterNames.isAllowedCluster(clusterId)) return;
 
-        // 7. Regular filtered tag
+        // 7. Regular filtered tag.
+        //
+        // This MUST mirror the rebuild path in buildNodeTags(). The two were allowed to
+        // drift once: structs were expanded on rebuild but re-stringified by live
+        // updates, so PeriodicEnergyImported (which changes every 60s) collapsed back to
+        // JSON while CumulativeEnergyImported (static) stayed expanded.
+        String attrType = unitOverride(clusterId, attrId);
+        if (attrType == null) attrType = MatterStructs.ATTR_TYPES.get(clusterId + "/" + attrId);
+        if (attrType != null) {
+            if (isMeasurementMetadata(attrType)) return;
+            putValueTags(prefix + "/Nodes/" + readablePath, value, attrType);
+            return;
+        }
         putTag(prefix + "/Nodes/" + readablePath, dataType, tagValue);
     }
 
@@ -1494,6 +1508,29 @@ class MatterTagProvider implements GatewayTagProvider {
         if (value instanceof Boolean || value instanceof Number || value instanceof String
                 || value instanceof Date) return value;
         return gson.toJson(value);
+    }
+
+    /**
+     * Struct types that describe the DEVICE'S OWN measurement precision rather than any
+     * measured quantity -- accuracy envelopes and measurement ranges.
+     *
+     * <p>They are static and nobody trends them, but they expand into a lot of tags:
+     * a Shelly Plug US Gen4 published 70 tags of which ~55 were these, because
+     * ElectricalPowerMeasurement.Accuracy is a list of five structs each containing a
+     * nested list of ranges. At that rate twenty metering devices would spend over a
+     * thousand tags on metadata, which matters against Maker's 10,000 tag ceiling.
+     *
+     * <p>Matched by STRUCT TYPE rather than by cluster/attribute id, so this holds for
+     * any cluster that uses the same descriptors. The Raw Data view is unaffected --
+     * that exists precisely to show everything.
+     */
+    private static final Set<String> MEASUREMENT_METADATA_STRUCTS =
+            Set.of("MeasurementAccuracyStruct", "MeasurementRangeStruct");
+
+    private static boolean isMeasurementMetadata(String type) {
+        if (type == null) return false;
+        String base = type.startsWith("list:") ? type.substring(5) : type;
+        return MEASUREMENT_METADATA_STRUCTS.contains(base);
     }
 
     /**
