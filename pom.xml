@@ -19,10 +19,13 @@
         <ignition-platform-version>8.3.9</ignition-platform-version>
         <ignition-sdk-version>${ignition-platform-version}</ignition-sdk-version>
         <java-matter-client-version>0.1.0</java-matter-client-version>
-        <!-- Minute resolution: with hour resolution two builds in the same hour produce
-         an IDENTICAL module version, so there is no way to tell from the gateway log
-         whether a redeploy actually took effect. -->
-        <maven.build.timestamp.format>yyyyMMddHHmm</maven.build.timestamp.format>
+        <!-- yyyyMMddHH and NOT finer. Ignition parses every version segment as an int
+         (common.model.Version), so a yyyyMMddHHmm stamp like 202610110745 overflows
+         Integer.MAX_VALUE and the module dies at load with
+         NumberFormatException -> "Exception parsing module.xml". The ten-digit form
+         (2026101107) fits. Two builds in the same hour therefore share a version:
+         bump module-base-version when you need to tell redeploys apart. -->
+        <maven.build.timestamp.format>yyyyMMddHH</maven.build.timestamp.format>
         <module-base-version>0.1.1</module-base-version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
