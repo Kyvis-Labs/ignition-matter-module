@@ -1235,9 +1235,16 @@ class MatterTagProvider implements GatewayTagProvider {
         QualifiedValue qv = new BasicQualifiedValue(value, QualityCode.Good);
         TagNode existing = tags.get(path);
         if (existing != null && !existing.isFolder) {
-            existing.currentValue = qv;
-            notifySubscribers(path, qv);
-            return;
+            if (existing.dataType == dataType) {
+                existing.currentValue = qv;
+                notifySubscribers(path, qv);
+                return;
+            }
+            // The type changed. This happens when an attribute first arrives null and
+            // only later carries a real value -- PowerFactor is reported as null until
+            // the plug has load, so it would otherwise be typed String for the life of
+            // the provider. TagNode.dataType is final, so the node has to be replaced.
+            logger.debug("Tag {} data type {} -> {}", path, existing.dataType, dataType);
         }
 
         tags.put(path, new TagNode(dataType, false, qv));
@@ -1569,8 +1576,40 @@ class MatterTagProvider implements GatewayTagProvider {
         }
 
         Object converted = convertByType(declared, value);
+        if (converted == null) {
+            // Absent value. Typing from the value alone would make this a String tag
+            // (convertValue maps null to ""), and it would stay String even once the
+            // device starts reporting -- so fall back to the DECLARED type.
+            DataType fromModel = dataTypeForDeclaredType(declared);
+            putTag(path, fromModel != null ? fromModel : DataType.String, null);
+            return;
+        }
         putTag(path, inferDataType(converted), convertValue(converted));
     }
+
+    /**
+     * Maps a Matter type name to an Ignition DataType, or null when unsure.
+     *
+     * <p>Only consulted when the value itself is absent, so being conservative costs
+     * nothing: anything unrecognised falls back to value-based inference.
+     */
+    private static DataType dataTypeForDeclaredType(String type) {
+        if (type == null || type.isEmpty()) return null;
+        if (type.startsWith("list:") || MatterStructs.STRUCT_FIELDS.containsKey(type)) return null;
+        if ("bool".equals(type)) return DataType.Boolean;
+        if (type.startsWith("epoch-")) return DataType.DateTime;
+        if ("string".equals(type) || "octstr".equals(type)) return DataType.String;
+        // Enums and bitmaps arrive as numbers, as do all the unit types.
+        if (type.endsWith("Enum") || type.endsWith("Bitmap")) return DataType.Float8;
+        for (String numeric : NUMERIC_TYPE_PREFIXES) {
+            if (type.startsWith(numeric)) return DataType.Float8;
+        }
+        return null;
+    }
+
+    private static final List<String> NUMERIC_TYPE_PREFIXES = List.of(
+            "int", "uint", "single", "double", "percent", "elapsed-", "systime-",
+            "voltage-", "amperage-", "power-", "energy-", "frequency-", "temperature");
 
     /**
      * Converts a value using the unit encoded in its declared type, so a new cluster
