@@ -81,6 +81,9 @@ mvn package
 
 # Skip tests
 mvn package -DskipTests
+
+# Also produce Matter-Tag-Provider.modl, signed with the Kyvis Labs key when it is available
+scripts/build.sh -DskipTests
 ```
 
 ## Configuration

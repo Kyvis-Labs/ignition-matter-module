@@ -18,7 +18,12 @@ mvn package
 
 # Build without tests
 mvn package -DskipTests
+
+# Unsigned, plus Matter-Tag-Provider.modl signed with the Kyvis Labs key if ~/data/kyvis has it
+scripts/build.sh -DskipTests
 ```
+
+Releases: push a tag like `v0.2.0`. `.github/workflows/release.yml` builds with `module-base-version` taken from the tag, signs with the `MATTER_SIGNING_PFX_BASE64` / `MATTER_SIGNING_PASSWORD` secrets (environment `release`) and publishes the signed `.modl`.
 
 The build uses the `ignition-maven-plugin` to package a `.modl` file — the deployable Ignition module artifact.
 
