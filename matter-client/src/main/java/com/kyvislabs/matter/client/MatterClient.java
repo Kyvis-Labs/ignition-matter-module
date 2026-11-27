@@ -213,7 +213,26 @@ public class MatterClient implements AutoCloseable {
         args.put("node_id", MatterJson.unsigned(nodeId));
         args.put("attribute_path", attributePath);
         args.put("value", value);
-        sendCommand(APICommand.WRITE_ATTRIBUTE, args).get(timeoutSeconds, TimeUnit.SECONDS);
+        JsonElement result = sendCommand(APICommand.WRITE_ATTRIBUTE, args)
+                .get(timeoutSeconds, TimeUnit.SECONDS);
+        checkWriteStatus(attributePath, result);
+    }
+
+    /**
+     * A device refusing a write is not a server error: the reply is a normal result listing a
+     * per-path interaction model status, e.g. 136 (UNSUPPORTED_WRITE) for a read-only attribute.
+     * Without this check a refused write looks identical to a successful one.
+     */
+    static void checkWriteStatus(String attributePath, JsonElement result) throws MatterException {
+        if (result == null || !result.isJsonArray()) return;
+        for (JsonElement entry : result.getAsJsonArray()) {
+            if (!entry.isJsonObject()) continue;
+            JsonElement status = entry.getAsJsonObject().get("Status");
+            if (status != null && status.isJsonPrimitive() && status.getAsInt() != 0) {
+                throw new MatterException(status.getAsInt(),
+                        "Device refused write to " + attributePath + " (status " + status.getAsInt() + ")");
+            }
+        }
     }
 
     public Map<String, Boolean> pingNode(long nodeId) throws Exception {

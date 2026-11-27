@@ -1062,6 +1062,14 @@ class MatterTagProvider implements GatewayTagProvider {
         }
 
         if (matterClient != null && matterClient.isConnected()) {
+            // OnOff (cluster 6, attribute 0) is read-only in Matter: devices answer a write with
+            // UNSUPPORTED_WRITE. Switching is done with the cluster's On/Off commands instead.
+            String[] np = numericPath.split("/");
+            if (np.length == 3 && "6".equals(np[1]) && "0".equals(np[2])) {
+                matterClient.sendDeviceCommand(nodeId, Integer.parseInt(np[0]), 6,
+                        isTriggered(value) ? "On" : "Off", null);
+                return;
+            }
             matterClient.writeAttribute(nodeId, numericPath, value);
             attributeWritesSent.incrementAndGet();
             updateTagValue("Server/AttributeWritesSent", attributeWritesSent.get());

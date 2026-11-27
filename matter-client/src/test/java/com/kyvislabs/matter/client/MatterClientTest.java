@@ -16,6 +16,23 @@ class MatterClientTest {
     private final Gson gson = new Gson();
 
     @Test
+    void writeStatusRefusalThrows() {
+        // Real matterjs-server reply for a write to the read-only OnOff attribute of a P125M.
+        var refused = JsonParser.parseString(
+                "[{\"Path\":{\"EndpointId\":1,\"ClusterId\":6,\"AttributeId\":0},\"Status\":136}]");
+        MatterException e = assertThrows(MatterException.class,
+                () -> MatterClient.checkWriteStatus("1/6/0", refused));
+        assertTrue(e.getMessage().contains("136"));
+    }
+
+    @Test
+    void writeStatusSuccessPasses() throws Exception {
+        MatterClient.checkWriteStatus("0/40/5", JsonParser.parseString(
+                "[{\"Path\":{\"EndpointId\":0,\"ClusterId\":40,\"AttributeId\":5},\"Status\":0}]"));
+        MatterClient.checkWriteStatus("0/40/5", null);
+    }
+
+    @Test
     void testAPICommandValues() {
         assertEquals("start_listening", APICommand.START_LISTENING.getValue());
         assertEquals("commission_with_code", APICommand.COMMISSION_WITH_CODE.getValue());
